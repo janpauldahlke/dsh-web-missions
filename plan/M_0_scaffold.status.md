@@ -14,3 +14,4 @@ Phase state: **not-started** · Updated: 2026-10-12 · Last slice: —
 ## Log (append-only)
 
 - 2026-10-12 phase file frozen (peer planning). Sub-decisions D-M0.1–D-M0.4 called by implementer.
+- 2026-10-12 review #3 (operator): review closed, pack frozen (M0–M9). C9 sibling form-speak folded into the phase file (package.json form, v1.0.0, tracked `lib/`, LICENSE MIT, tsconfig); D-M0.1 npm availability confirmed. Slices 0.1–0.4 unchanged — phase ready to start.
