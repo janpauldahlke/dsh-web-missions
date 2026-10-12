@@ -1,6 +1,6 @@
 /**
- * Agent tools for web missions (M1): mission_start, mission_stop
- * (mission_list / mission_status land in slice 1.3).
+ * Agent tools for web missions (M1): mission_start, mission_list,
+ * mission_status, mission_stop.
  *
  * Registers plain tool definition objects on the harness `tools` service —
  * proven exemplar: `dsh-local-long-horizon/src/host/tools.ts` (do not invent
@@ -18,6 +18,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import {
   StoreError,
   missionRoot,
+  listMissions,
+  missionStatus,
   startMission,
   stopMission,
   resolveMissionId,
@@ -107,6 +109,86 @@ export function registerMissionTools(ctx: Context): () => void {
           budget: args.budget,
         })
         return manifest
+      } catch (error) {
+        return toolErrorResult(error)
+      }
+    },
+  }))
+
+  disposers.push(tools.register({
+    name: 'mission_list',
+    description:
+      'List web missions for this project. Returns active missions first ' +
+      '(newest first) and all recents (newest first, cap 50) with page and ' +
+      'visited counts.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        cwd: CWD_PARAM,
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          ok: { type: 'boolean' },
+          error: { type: 'string' },
+          active: { type: 'array' },
+          recents: { type: 'array' },
+        },
+      },
+      render: renderJson,
+    },
+    async execute(args: ToolArgs, exec: ExecLike) {
+      try {
+        const root = missionRoot(resolveCwd(args, exec))
+        return listMissions(root)
+      } catch (error) {
+        return toolErrorResult(error)
+      }
+    },
+  }))
+
+  disposers.push(tools.register({
+    name: 'mission_status',
+    description:
+      'Return the full manifest of the default (most recently started active) ' +
+      'mission, or the given mission_id, including visited: the ledger of ' +
+      'fetched pages. This is the canonical visited list — do not track ' +
+      'visited URLs from memory.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        mission_id: { type: 'string', description: 'Mission id (default: most recently started active mission).' },
+        cwd: CWD_PARAM,
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          ok: { type: 'boolean' },
+          error: { type: 'string' },
+          mission_id: { type: 'string' },
+          note: { type: 'string' },
+          status: { type: 'string' },
+          stop_reason: { type: 'string' },
+          budget: { type: 'object' },
+          created_at: { type: 'string' },
+          updated_at: { type: 'string' },
+          visited: { type: 'array' },
+        },
+      },
+      render: renderJson,
+    },
+    async execute(args: ToolArgs, exec: ExecLike) {
+      try {
+        const root = missionRoot(resolveCwd(args, exec))
+        return missionStatus(root, args.mission_id)
       } catch (error) {
         return toolErrorResult(error)
       }
