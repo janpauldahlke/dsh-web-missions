@@ -1,17 +1,20 @@
 # M_0 scaffold — phase status
 
-Phase state: **not-started** · Updated: 2026-10-12 · Last slice: —
+Phase state: **green** (V1–V3, V5 mechanical ✅; V4 operator visual pass pending) · Updated: 2026-10-12 · Last slice: 0.4
 
 ## Slices
 
 | # | Slice | State | Verify evidence |
 | --- | --- | --- | --- |
-| 0.1 | package.json + cordis.patch.yml + .gitignore + ENV.md | todo | — |
-| 0.2 | build.mjs + src/host (health route) + src/client (Missions tab, one-shot ping) | todo | — |
-| 0.3 | install bundle on web profile + boot :3090 (clean env, cwd=repo) | todo | — |
-| 0.4 | run V1–V5 (M_0_scaffold.md), operator visual pass | todo | — |
+| 0.1 | package.json + cordis.patch.yml + .gitignore + ENV.md (+ tsconfig, LICENSE) | done | node field-set diff vs dsh-memento package.json → only delta `dependencies` (C9-allowed: name/desc/keywords/deps); C9 fields present (name dsh-local-web-missions, v1.0.0, main lib/index.js, dsh.bundle+dsh.client, files[] 5, license MIT, engines ≥20); python yaml parse → top-level array, single insert row id=web-missions, name ≡ package name; git check-ignore → ENV.md/.env.local/node_modules/STATUS.md all ignored · commit `m0: C9 identity files` (729429f) |
+| 0.2 | build.mjs + src/host (health route) + src/client (Missions tab, one-shot ping) | done | `npm run build` (esbuild + tsc --noEmit) clean; node ESM smoke of lib/index.js → exports name/inject/apply, registers exact route, fake-ctx GET → 200 `{"ok":true,"name":"dsh-local-web-missions","version":"1.0.0",…}`, POST → 405 JSON; lib/client.js head = ModuleLoader wrapper with id dsh-local-web-missions · commit 4c4addb (lib/ tracked per C9, package-lock.json pins browser39 2.0.0 tree) |
+| 0.3 | install bundle on web profile + boot :3090 (clean env, cwd=repo) | done | `dsh plugin --profile web add` → `+ dsh-local-web-missions 1.0.0 <- ../../../dev/dsh-web-missions`; boot via `./scripts/boot-3090.sh` as tracked process (pid 174498, ready ~1s, log = URL line only, no plugin load errors); dump-config lines 1583–1585 show the `web-missions` row · commit 4c4addb+ |
+| 0.4 | run V1–V5 (M_0_scaffold.md), operator visual pass | done (V4 pending operator) | **V1** curl health → 200 `{"ok":true,"name":"dsh-local-web-missions","version":"1.0.0","time":"2026-10-12T20:43:43.641Z"}` · **V2** dump-config \| grep -c web-missions → 3 (≥1) · **V3** boot HTML (token URL → 303 + cookie → 37KB HTML) → boot-manifest module URL `plugins/??dsh-local-web-missions/client.js&rev=b8e85ca95a92` (`&amp;` unescaped) → HTTP 200, 4901 bytes, contains `window.__ModuleLoader__.load({ id: "dsh-local-web-missions"` · **V4** operator visual pending; mechanical backing: client factory simulated in node → registers tab type {id:web-missions, kind:web-missions, title:"Missions", guide order 280} + keyed body `sidebar.right.pane.tab` key=web-missions (MissionsBody); bundle requires only `react` + `react/jsx-runtime` (platform baseline) · **V5** :3080 pid 156170 + :8080 pid 156122 unchanged, :11434 absent (baseline), :3090 = 174498 (ours) |
 
 ## Log (append-only)
 
 - 2026-10-12 phase file frozen (peer planning). Sub-decisions D-M0.1–D-M0.4 called by implementer.
 - 2026-10-12 review #3 (operator): review closed, pack frozen (M0–M9). C9 sibling form-speak folded into the phase file (package.json form, v1.0.0, tracked `lib/`, LICENSE MIT, tsconfig); D-M0.1 npm availability confirmed. Slices 0.1–0.4 unchanged — phase ready to start.
+- 2026-10-12 slice 0.1 done: C9 identity files written + committed (729429f). React major confirmed against installed 0.2.1-alpha.2 web shell (apps/web: react ^18.2.0, @types/react ~18.3.1) → devDeps pinned ^18.3.0, matching memento exactly. ENV.md records the pin (gitignored).
+- 2026-10-12 slice 0.2 done: dual-face sources + build (commit 4c4addb). Seam note: M_0 says "two ctx.effect() calls (sampler + unregister)" — M0 has no sampler (no polling, per D-M0.4), so the route gets its single unregister effect; the sampler half lands in M5+ if/when a poller exists. npm install clean (13 packages, browser39 2.0.0 + 5 platform optional-deps in lockfile).
+- 2026-10-12 slices 0.3+0.4 done: bundle on web profile, :3090 booted via boot-3090.sh (tracked process pid 174498), V1–V3 + V5 green (evidence in table). V3 note: the combo `??` trips curl's URL globbing — needs `curl -g`; the boot-manifest per-module URL is the cleanest target. Phase green per M_0 (V4 operator visual pass to be confirmed in chat).

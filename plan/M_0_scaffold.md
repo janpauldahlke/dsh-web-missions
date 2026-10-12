@@ -1,6 +1,6 @@
 # M_0 — scaffold
 
-Phase: **M0** · Status: not started (see `M_0_scaffold.status.md`)
+Phase: **M0** · Status: green (V1–V3, V5 mechanical; V4 operator visual pending — see `M_0_scaffold.status.md`)
 Depends on: nothing — KICKOFF §1 pre-checks + §4 install/boot.
 Packaging authority: **`skills/dsh-out-of-tree-plugin/SKILL.md`** (read before inventing).
 
