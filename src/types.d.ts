@@ -30,6 +30,9 @@ declare module '@deepseek-ai/cordis' {
       inject: (name: string, factory: () => unknown) => () => void
       register: (key: SlotKey, render: unknown) => () => void
     }
+    tools: {
+      register: (def: Record<string, unknown>) => () => void
+    }
     // Present on webServer-injected contexts (gpu-monitor pattern: the host
     // declares `inject: ['webServer']` and registers routes directly).
     webServer: {
