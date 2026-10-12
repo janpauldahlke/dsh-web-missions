@@ -74,6 +74,8 @@ export function registerMissionsRoutes(ctx: Context): void {
   })
   ctx.effect(() => unregisterList, 'web-missions: /api/web-missions/missions route')
 
+  // Prefix without trailing slash: matches the bare path (exact route wins for
+  // that URL) and `<prefix>/<anything>`. See MISSIONS_ID_PREFIX doc.
   const unregisterStatus = ctx.webServer.register({
     kind: 'prefix',
     path: MISSIONS_ID_PREFIX,
@@ -84,13 +86,15 @@ export function registerMissionsRoutes(ctx: Context): void {
       }
       const host = req.headers.host ?? '127.0.0.1'
       const url = new URL(req.url ?? MISSIONS_ID_PREFIX, `http://${host}`)
-      // pathname must begin with the prefix; the remainder is the id (no further segments).
-      if (!url.pathname.startsWith(MISSIONS_ID_PREFIX)) {
+      if (url.pathname === MISSIONS_ID_PREFIX) {
+        // Bare prefix (no id) — the exact list route owns this URL; defensive 404.
         send(res, 404, { ok: false, error: 'not found' })
         return
       }
-      const remainder = url.pathname.slice(MISSIONS_ID_PREFIX.length)
-      if (!MISSION_ID_PATTERN.test(remainder) || remainder.includes('/')) {
+      // Strip the separator; the remainder must be the full id (the anchored
+      // pattern rejects anything with further segments).
+      const remainder = url.pathname.slice(MISSIONS_ID_PREFIX.length + 1)
+      if (!MISSION_ID_PATTERN.test(remainder)) {
         sendError(res, 404, 'unknown_mission', `no such mission: ${remainder}`)
         return
       }
