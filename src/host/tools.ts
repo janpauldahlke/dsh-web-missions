@@ -1,6 +1,6 @@
 /**
- * Agent tools for web missions (M1): mission_start, mission_list,
- * mission_status, mission_stop.
+ * Agent tools for web missions (M1: mission_start, mission_list,
+ * mission_status, mission_stop; M2: mission_fetch).
  *
  * Registers plain tool definition objects on the harness `tools` service —
  * proven exemplar: `dsh-local-long-horizon/src/host/tools.ts` (do not invent
@@ -24,6 +24,8 @@ import {
   stopMission,
   resolveMissionId,
 } from './store.ts'
+import { Browser39Fetcher, FetchError } from './fetcher.ts'
+import { runFetch } from './fetch-service.ts'
 
 type ToolArgs = Record<string, any>
 
@@ -53,6 +55,9 @@ type ToolErrorResult = { ok: false; error: string }
 
 function toolErrorResult(error: unknown): ToolErrorResult {
   if (error instanceof StoreError) {
+    return { ok: false, error: `${error.code}: ${error.message}` }
+  }
+  if (error instanceof FetchError) {
     return { ok: false, error: `${error.code}: ${error.message}` }
   }
   return { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -189,6 +194,69 @@ export function registerMissionTools(ctx: Context): () => void {
       try {
         const root = missionRoot(resolveCwd(args, exec))
         return missionStatus(root, args.mission_id)
+      } catch (error) {
+        return toolErrorResult(error)
+      }
+    },
+  }))
+
+  disposers.push(tools.register({
+    name: 'mission_fetch',
+    description:
+      'Fetch a URL with the local browser39 and store it in the mission ' +
+      '(page.json + text chunks + links, plus a visited-ledger row). Returns ' +
+      'a receipt: page_quality (full | thin | blocked), chunk_count, ' +
+      'preview_head, sample_links (≤5), and a deterministic next_step_hint. ' +
+      'Blocked pages (4xx/5xx, empty) are stored too, so dead URLs are known, ' +
+      'not guessed.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['url'],
+      properties: {
+        url: { type: 'string', description: 'Absolute http(s) URL to fetch (required).' },
+        mission_id: { type: 'string', description: 'Mission id (default: most recently started active mission).' },
+        force: { type: 'boolean', description: 'Accepted for schema stability; takes effect from M3 (cache).' },
+        cwd: CWD_PARAM,
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          ok: { type: 'boolean' },
+          error: { type: 'string' },
+          mission_id: { type: 'string' },
+          artifact_id: { type: 'string' },
+          url: { type: 'string' },
+          final_url: { type: 'string' },
+          cached: { type: 'boolean' },
+          fetched_at: { type: 'string' },
+          age_days: { type: 'number' },
+          page_quality: { type: 'string' },
+          quality_signals: { type: 'array' },
+          consent_attempted: { type: 'boolean' },
+          consent_improved: { type: 'boolean' },
+          chunk_count: { type: 'integer' },
+          preview_head: { type: 'string' },
+          depth: { type: 'integer' },
+          parent_artifact_id: { type: ['string', 'null'] },
+          visited_count: { type: 'integer' },
+          next_step_hint: { type: 'string' },
+          sample_links: { type: 'array' },
+        },
+      },
+      render: renderJson,
+    },
+    async execute(args: ToolArgs, exec: ExecLike) {
+      try {
+        const root = missionRoot(resolveCwd(args, exec))
+        return await runFetch(root, new Browser39Fetcher(), {
+          url: args.url,
+          mission_id: args.mission_id,
+          force: args.force,
+        })
       } catch (error) {
         return toolErrorResult(error)
       }

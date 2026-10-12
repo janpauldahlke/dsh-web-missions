@@ -283,6 +283,21 @@ export function resolveMissionId(root: string, id?: string): string {
   return active.mission_id
 }
 
+/**
+ * Append a visited-ledger row (D11) to the manifest. `normalized_url` is the
+ * ledger key (D-M2.2: normalized FINAL url); `url` is the final url as
+ * fetched. Updates manifest `updated_at`. The index row is untouched (lifecycle
+ * rows change only on start/stop).
+ */
+export function appendFetchedRow(root: string, missionId: string, row: FetchedRow): Manifest {
+  const manifest = readManifest(root, missionId)
+  if (!manifest) throw new StoreError('unknown_mission', `no such mission: ${missionId}`)
+  manifest.fetched.push(row)
+  manifest.updated_at = new Date().toISOString()
+  writeManifest(root, manifest)
+  return manifest
+}
+
 export function listMissions(root: string): ListResult {
   const rows = readIndex(root)
   const sum = (r: IndexRow): MissionSummary => {
