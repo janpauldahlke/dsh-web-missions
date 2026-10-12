@@ -2,7 +2,17 @@
 
 Phase: **M2** · Status: not started (see `M_2_fetcher.status.md`)
 Depends on: M1 (store + tools registered), M0 (build/boot loop).
-External: `browser39` 1.7.1 on PATH or via `BROWSER39_BIN` (verified in ENV.md).
+External: `@aquintanar/browser39@2.0.0` (plugin dependency, platform binary via
+optional-deps; `BROWSER39_BIN` override). Transport = `browser39 batch` JSONL
+(C3, review #4).
+
+**First slice = contract probe (do before writing the Fetcher).** 2.0.0 is new
+(published 2026-10-12); the 1.7.x JSONL shape may have drifted. Run a sample
+`browser39 batch commands.jsonl --output results.jsonl` with one `fetch` action,
+capture the exact result-line schema as a committed fixture
+(`fixtures/b39-fetch-result.jsonl`), and pin the subcommand/flags in the status
+log. Also probe whether 2.0.0's JS-click clears a real CMP (raises consent value
+in M5). The Fetcher is written against the captured fixture, not from memory.
 
 ---
 
@@ -43,10 +53,15 @@ stored canonical page — the cache key (URL-only) depends on it.
   3. `browser39` on `PATH` (global installs, legacy Eris box).
   Missing everywhere → `error: spawn_failed: browser39 not found (no
   BROWSER39_BIN, no node_modules binary, not on PATH)`.
-- Subprocess per fetch, parse CLI JSONL/JSON stdout (Eris-proven pattern;
-  do not re-invent the CLI surface — probe the 2.0.0 CLI at implementation
-  and pin the exact subcommand/flags in the status log; contract stays
-  version-agnostic).
+- **Transport = `browser39 batch` (NOT one-shot `fetch`), Eris-proven**
+  (`~/dev/eris/src/tools/web/fetcher.rs::browser39_run_batch_blocking`): write
+  `commands.jsonl` (one `{action:"fetch", url, options}` line), run
+  `browser39 batch <in> --output <out> --config <cfg> [--no-persist]`, read the
+  `results.jsonl` line(s). One-shot `fetch` is rejected because it cannot
+  `click` — M5 consent needs the batch action protocol. Result mapping per C3
+  (`markdown`→content, `links[{i,text,href}]`→links, `truncated`/`next_offset`).
+  Options: `{include_links:true, strip_nav:true, show_selectors_first:false,
+  max_tokens, offset}`.
 - **Session dir (v0.1 of C7):** upstream persists cookies to
   `~/.local/share/browser39/session.enc` (encrypted, single shared file).
   If the 2.0.0 CLI/config exposes a per-invocation session dir (probe
@@ -56,7 +71,8 @@ stored canonical page — the cache key (URL-only) depends on it.
   host-scoping then applies at the cookie level, not the dir level. The probe
   decides; the plan holds the requirement (consent persists across missions;
   Clear all resets it).
-- **One spawn per non-cached fetch** (M3 asserts this; design for it now).
+- **One batch invocation per non-cached fetch** (M3 asserts this; design for it
+  now). Cost metric = batch invocations, not OS process count.
 - Timeout: 30 s per spawn (hand config `fetchTimeoutMs`); on timeout →
   `fetch_failed` receipt, no ledger row, budget still decremented (attempted).
 - Exit/parse failures → `fetch_failed` with the stderr tail (≤200 chars) in the
@@ -134,7 +150,7 @@ No UI surface for these until M6+.
 | --- | --- | --- |
 | V1 | `mission_fetch` on a known-good URL (e.g. a fixture page, plain HTML) | receipt `ok`, `cached: false`, `page_quality: 'full'`, `chunk_count ≥ 1`; page.json + chunks + links.json on disk; ledger row present |
 | V2 | fetch a 404 URL | receipt `page_quality: 'blocked'`, no chunks, ledger row with quality `blocked` |
-| V3 | fetch an unparsable URL | `error: normalize_failed`, **no** browser39 spawn (assert via spawn counter/log) |
+| V3 | fetch an unparsable URL | `error: normalize_failed`, **no** batch invocation (assert via batch counter/log) |
 | V4 | two fetches of the same URL (M2: no cache yet) | two ledger rows, two artifacts — *expected until M3*; V4 exists to have the pre-state for the M3 diff |
 | V5 | `browser39` killed / `BROWSER39_BIN` pointed at a dead path | `error: spawn_failed`, no crash, mission stays usable |
 | V6 | redirect chain (http→https, www→bare) | `final_url` recorded; **ledger key = normalized final URL**, so a direct fetch of the final URL and the redirected one share a key (assert both normalize equal) |
@@ -145,7 +161,9 @@ No UI surface for these until M6+.
   retry** (M5), **no find** (M4), **no allowlist** (M5).
 - No HTTP fallback fetcher (optional later, not v0).
 - No `selector`, no query-time options on fetch (S2 closed).
-- No npm browser39 dependency in `package.json` — subprocess + `BROWSER39_BIN`.
+- Transport is `browser39 batch` only (no one-shot `fetch`, no `watch`/`mcp` in
+  v0). `@aquintanar/browser39@2.0.0` IS a declared dependency (S1 flip); the
+  subprocess resolves it from `node_modules` / `BROWSER39_BIN`.
 - Commit after green: `m2: fetcher port + Browser39Fetcher + mission_fetch receipts`.
 
 ## Sub-decisions

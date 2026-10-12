@@ -23,6 +23,7 @@ phase has implemented it and Verify passed).
 | C7 | Session/consent layout | M5 | M5, M6, M8 | seed (S3) |
 | C8 | Retrieval seam (engine port) | M4 (v0 = lexical) | post-v0 embeddings / hybrid | seed |
 | C9 | Package & publish form (sibling form-speak) | M0 (scaffold), frozen M9 | M0, M9, dsh.pub | seed |
+| C10 | Consent tactic seam (`ConsentTactic` + labels asset) | M5 | M5, M6 (hint), M8 | seed (review #4) |
 
 ---
 
@@ -51,6 +52,13 @@ Born: M1 · Layout frozen at M1 green.
   amended by this entry.
 - Recents = `index.json` until Clear (D7). `Clear recents` empties the list;
   `Clear all` deletes mission dirs + index + (M6 pane action) host session dirs.
+- **cwd resolution (review #4):** `<cwd>` is resolved **per tool call** from the
+  exec/agent session header (`exec.agent.session.header.cwd`), with an optional
+  `cwd` arg override, else error — **not** `process.cwd()`. Exemplar:
+  `resolveCwd()` in `dsh-local-long-horizon/src/host/tools.ts`. Pane HTTP routes
+  (M1/M6) have no agent session; they resolve cwd from the server process cwd
+  (acceptance server booted in this repo — D6). Tools and routes must agree on
+  the same mission root for a given project.
 
 ## C2 — URL normalization
 
@@ -109,8 +117,23 @@ interface FetchedPage {
   binary ships via its optional-deps and is resolved from the plugin's own
   `node_modules` (`require.resolve` → `bin.js`, spawned via node).
   `BROWSER39_BIN` stays the override; `PATH` is the legacy fallback. Contract
-  is version-agnostic. Spawn budget: **one spawn per non-cached fetch** — the
-  M3 proof asserts on this.
+  is version-agnostic (verified 2026-10-12: `npm i @aquintanar/browser39@2.0.0`
+  pulls `browser39-linux-x64`, 52.8 MB, `require.resolve` resolves).
+- **Transport (review #4, Eris-proven — `~/dev/eris/src/tools/web/fetcher.rs`):
+  `browser39 batch`, NOT one-shot `fetch`.** Write a `commands.jsonl`, run
+  `browser39 batch <in> --output <out> --config <cfg> [--no-persist]`, parse
+  the `results.jsonl` lines. One-shot `fetch` is rejected because it cannot
+  `click` — consent (C10) needs the batch action protocol. A plain fetch = one
+  batch with one `fetch` action; consent = extra batches with `click`+`fetch`
+  actions. **Cost metric is batch invocations, not OS process count** — the M3
+  proof asserts "one batch for both fetches of the same URL; cache hit = zero
+  batches."
+- **browser39 fetch result → `FetchedPage` mapping:** result line fields
+  `markdown` → `content`; `links[{i,text,href}]` → `links[{url,text}]`;
+  `truncated`/`next_offset` → `quality_signals`/pagination. `ok:false` lines →
+  `fetch_failed` (Eris `parse_browser39_fetch_line`). Batch command options
+  used: `{include_links:true, strip_nav:true, show_selectors_first:false,
+  max_tokens, offset}`.
 - HTTP fallback for trivial static pages: optional later, not in v0 scope.
 - `quality` is set by **our** deterministic code on the fetch output (S7
   resolution): `blocked` on HTTP 4xx/5xx or empty body; `thin` on
@@ -171,6 +194,17 @@ mission_stop({ mission_id?, reason? })                    // → { mission_id, s
 
 **Do not** register anything named `web_fetch` / `web_search` (PLAN §6).
 Discovery stays out of the model-facing surface until M7.
+
+Every `mission_*` tool also accepts an optional `cwd` (project root override);
+default = session cwd per C1 cwd-resolution. Tool registration shape + JSON
+Schema scar: see C5-note below.
+
+**C5-note (tool registration, review #4):** register via
+`(ctx as unknown as { tools }).tools.register({ name, description, parameters,
+output:{schema,render}, execute })` — exemplar `dsh-local-long-horizon/
+src/host/tools.ts`. **Scar (dsh ≥ 0.1.7):** JSON Schema must NOT put
+`required: true` on scalar nodes — use object-level `required: ['f', …]`
+arrays. `execute(args, exec)` reads cwd from `exec` (C1).
 
 ## C6 — Budget unit (S5 resolution)
 
@@ -249,10 +283,10 @@ description / domain keywords / deps differ. Exemplar of record:
 | `version` | **1.0.0** at publish (all siblings 1.0.x; no 0.x public) |
 | `description` | one sentence: what + "for DeepSeek Harness …" + negative scope — "Persist-and-find web research for DeepSeek Harness local agents (browser39 fetch, mission store, lexical find, budget + allowlist + depth fence). No cloud search in v0." |
 | `files` | `["lib", "cordis.patch.yml", "README.md", "LICENSE", "media"]` |
-| `scripts` | `build` (`node build.mjs && tsc --noEmit`) + sibling `prepare` fallback (build or warn, rely on prebuilt `lib/`) + `test` |
+| `scripts` | `build` (`node build.mjs && tsc --noEmit`). **Reconcile (review #4):** exemplar `dsh-memento` ships **only** `build` (no `prepare`/`test`) — match it; keep `prepare` fallback only if a sibling actually has it (it does not as of 2026-10-12). |
 | `repository` / `homepage` / `bugs` | `janpauldahlke/dsh-web-missions` triple |
 | `keywords` | base block `dsh-plugin, deepseek-harness, deepseek-harness-plugin, dsh, cordis, cordis-plugin` + domain block (D-M9.4) + tail `sidebar, web-ui` |
-| `devDependencies` | `@types/node`, `@types/react` (pinned to installed web shell), `esbuild`, `typescript` + `tsconfig.json` at root |
+| `devDependencies` | `@types/node`, `@types/react`, `esbuild`, `typescript` + `tsconfig.json` at root. **Reconcile (review #4):** memento also declares `react` in devDeps and pins `@types/react ^18.3.0` + `react ^18.3.0`; add `"license": "MIT"` field + `"engines": { "node": ">=20" }` to match memento exactly. Confirm the React major against the installed `0.2.x` web shell at M0. |
 | `dependencies` | `@aquintanar/browser39` 2.0.0 — the only runtime dep |
 | `LICENSE` | MIT, header `Copyright (c) 2026 Jan (HagbardCeline) / janpauldahlke` |
 | `lib/` | **tracked** (siblings track it; `prepare` falls back to prebuilt lib) |
@@ -261,3 +295,59 @@ description / domain keywords / deps differ. Exemplar of record:
 | cordis.patch.yml | 3-line comment header (layer / host half / client half) + single `insert` row (short `id`, `name` ≡ package name) |
 | gitignore | `ENV.md`, `.env` / `.env.*` / `*.key`, `node_modules/`, `dist/`, `*.log`, `.DS_Store`, `**/.dsh-session`, `.dsh/`, `STATUS.md` (generated here — memento's is hand-written, documented divergence) |
 | documented divergences | `plan/` + `skills/` tracked here as design record (memento gitignores them); `files[]` keeps both out of the tarball |
+
+## C10 — Consent tactic seam (labels collection + retry)
+
+Born: M5 (review #4, 2026-10-12 — Eris dig `~/dev/eris/src/tools/web/consent.rs`).
+Consumed by: M5 (fetch path), M6 (session hint), M8 (CMP-heavy smoke).
+
+**Principle (PLAN §8):** consent is deterministic Host code, **not** an LLM
+judgment and **not** model-facing tools. The model calls `mission_fetch`; the
+fetcher drives browser39 `click` actions behind the receipt. Same discipline as
+C8: **one seam, one v0 implementation.**
+
+Three parts — only one is code:
+
+1. **Collection (data, operator-editable):** per-host accept labels + a generic
+   fallback list, shipped as an asset `assets/consent_profiles.toml`, overridable
+   at `.dsh/web-missions/consent_profiles.toml`. Shape mirrors Eris
+   `HostConsentProfile { host, acceptLabels[] }` + `GENERIC_ACCEPT_LABELS`
+   ("Alle akzeptieren", "Accept all", "Zustimmen", …). `labelsForHost(host)` =
+   host labels ∪ generic (case-insensitive dedupe).
+
+2. **Seam + v0 impl (code):**
+
+```ts
+interface ConsentTactic {
+  readonly id: string                                     // receipt telemetry
+  run(page: FetchedPage, dep: ConsentDeps): Promise<FetchedPage | null>  // null = no help
+}
+interface ConsentDeps {
+  host: string
+  labels: string[]                                        // pre-merged
+  click: (text: string) => Promise<boolean>               // browser39 click action, ok flag
+  refetch: () => Promise<FetchedPage>                     // SAME host session
+  thinThreshold: number; maxAttempts: number
+}
+const TACTICS: ConsentTactic[] = [new LabelClickTactic()] // the array IS the extension point
+```
+
+   `LabelClickTactic`: for each label up to `maxAttempts`, run a batch
+   `[click(label), fetch(url)]`, keep the best result by char count, stop once
+   `chars ≥ thinThreshold`. (Eris loop, ported.)
+
+3. **Outcome → receipt (C3/C4):** `ConsentOutcome { attempted, improved,
+   allClicksFailed }` → `consent_attempted` / `consent_improved`. Still-thin →
+   `next_step_hint` carries the do-not-claim text + preload hint.
+
+**Preconditions / limits (do not fight these):**
+- **`persistSessions` must be ON** — the `click` batch and the `refetch` batch
+  are separate invocations; the accepted cookie only survives between them via
+  the on-disk host session (C7).
+- browser39 2.0.0 **does** run page JS (V8/deno_core), so label-click clears
+  more CMPs than the 1.7.x-era Eris doc implies — but it is **not** full
+  Chromium; iframe/SPA CMPs may still fail. Then the honest `thin` receipt +
+  **cookie-preload escape hatch** (operator drops cookies into the host session
+  / config) is the answer — not more tactics.
+- Consent is **best-effort; the honesty fields are the product.** Do not tune
+  for a high success rate (M8 A1 floor = 8/10, A2 tolerates "no usable page").

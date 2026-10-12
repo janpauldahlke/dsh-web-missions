@@ -69,10 +69,19 @@ The model owns the content; the host only creates + footer-on-stop.
 
 ### Tool registration
 
-Register all four via the host's tool API (same pattern the harness exposes to
-plugins; pin against the installed dsh, do not invent seats). Tool schemas are
-JSON Schema; results are JSON-serializable. Errors return `{ ok: false, error:
-<code>: <msg> }`, never throw into the tool layer.
+Register all four via `(ctx as unknown as { tools }).tools.register({ name,
+description, parameters, output:{schema,render}, execute })` — **proven exemplar:
+`dsh-local-long-horizon/src/host/tools.ts`** (do not invent seats). Results are
+JSON-serializable; errors return `{ ok:false, error: '<code>: <msg>' }`, never
+throw into the tool layer.
+
+- **JSON Schema scar (dsh ≥ 0.1.7):** do NOT put `required: true` on scalar
+  property nodes — use object-level `required: ['field', …]` arrays, or the
+  tool silently fails to register.
+- **cwd resolution (C1):** `execute(args, exec)` resolves the project root via
+  `resolveCwd(args, exec)` — `args.cwd` override → `exec.agent.session.header.cwd`
+  → else error. **Never `process.cwd()`.** This is what pins the mission store to
+  the agent's workspace. Copy long-horizon's `resolveCwd` verbatim.
 
 ## Verify
 

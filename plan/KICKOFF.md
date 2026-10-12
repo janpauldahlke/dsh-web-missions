@@ -23,13 +23,23 @@ ls skills/dsh-out-of-tree-plugin/SKILL.md   # vendored packaging skill (always p
   platform binary rides along via its optional-deps. Cargo `browser39` 1.7.1
   remains on the box (Eris) but is **not** the lab law anymore.
   `BROWSER39_BIN` stays the override/escape hatch.
+- **Transport law (review #4):** the Fetcher drives browser39 via the
+  **`browser39 batch`** JSONL protocol (Eris-proven,
+  `~/dev/eris/src/tools/web/fetcher.rs`), **not** one-shot `fetch` — only the
+  batch/action protocol supports the `click` needed for consent (M5/C10).
+  M2's first slice pins the 2.0.0 result schema as a committed fixture.
+- **cwd law:** every `mission_*` tool resolves the project root from the agent
+  session (`exec.agent.session.header.cwd`, optional `cwd` arg override) like
+  `dsh-local-long-horizon` — never `process.cwd()` (C1).
 
 ## 2. ENV.md (gitignored, created first)
 
 ```
-DSH pin:        0.2.1-alpha.2 (re-pin when the overnight/implementation starts)
-browser39:      @aquintanar/browser39 2.0.0 (npm dependency of the plugin — S1 flipped)
+DSH pin:        0.2.1-alpha.2 (operator-tested OK across siblings 2026-10-12)
+browser39:      @aquintanar/browser39 2.0.0 (npm dep; install verified — pulls browser39-linux-x64 52.8MB)
+b39 transport:  `browser39 batch` JSONL (C3 review#4; NOT one-shot fetch — needs click for consent)
 BROWSER39_BIN:  (unset = plugin resolves its own node_modules binary; cargo 1.7.1 override available)
+consent:        assets/consent_profiles.toml (host labels + generic), override .dsh/web-missions/consent_profiles.toml (C10)
 acceptance:     :3090, cwd = /home/hagbard/dev/dsh-web-missions
 allowlist:      on for dogfood; patterns file at .dsh/allowlist.txt (M5)
 chunkChars:     2000 (hand-set, M2 tuning later)
@@ -76,7 +86,13 @@ dependency through npm — no separate browser39 install, no cargo, no PATH
 state. `package-lock.json` is committed (the 2.0.0 tree is the pin).
 
 `package.json` — **C9 sibling form** (identical field set to the published
-siblings; only name / description / domain keywords / deps differ):
+siblings; only name / description / domain keywords / deps differ).
+**Reconcile before M0 writes it (review #4, vs `dsh-memento`):** add
+`"license": "MIT"` field + `"engines": { "node": ">=20" }`, add `react` to
+devDeps and pin `react` + `@types/react` to the installed `0.2.x` web shell
+major (memento = `^18.3.0`; confirm at M0), and **drop `prepare`/`test`** unless
+a sibling actually ships them (memento ships only `build`). The block below is
+pre-reconcile — DESIGN C9 is authoritative.
 
 ```json
 {

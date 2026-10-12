@@ -86,26 +86,36 @@ budget/allowlist, the agent cannot silently exceed it:
 
 ### Sessions/consent v0 (C7 — born here, S3)
 
-- **Host-scoped session dirs:** `~/.dsh/browser39/sessions/<host>/` (host =
-  lowercased hostname, no port). The fetcher passes `sessionKey` (M2 already
-  shapes the port for it); browser39 persists cookies there per host.
-  Consent is a **host property** — survives new missions, new projects.
-- `persistSessions` on by default (PLAN §10). `Clear all` (pane, M6) wipes
-  mission dirs + index + session dirs (operator escape hatch).
-- **Consent v0 flow** in the fetcher:
-  1. Fetch page → quality computed.
-  2. If `thin` **and** CMP markers hit → **one** retry: instruct browser39 to
-     click the first element matching the shared label list
-     (`CMP_LABELS` asset: "Alle akzeptieren", "Akzeptieren", "Accept all",
-     "Accept", "Zustimmen", "Allow all" + the M2 marker words), re-extract.
-  3. `consent_attempted: true` (step 2 ran); `consent_improved: true` iff the
-     re-extract is `full` (or text grew ≥ 3×).
-  4. Retry budget: exactly one attempt per fetch call (no loops); the retry
-     does **not** cost extra budget (same call).
-- **Cookie preload escape hatch:** documented path — operator drops a cookie
-  file into `~/dsh/browser39/sessions/<host>/` (format per browser39 session
-  layout; documented in the pane hint text + README), next fetch picks it up.
-  No UI import in v0.
+- **Host-scoped sessions:** host = lowercased hostname (no port). browser39 2.0.0
+  persists cookies to a session governed by config (`[session]` / `session.enc`),
+  **not** a `--session-dir` flag — so host-scoping = one per-host config passed as
+  `--config ~/.dsh/browser39/sessions/<host>/config.toml` (one session file per
+  host). Consent is a **host property** — survives new missions and projects.
+  (C7: the dir is ours; the session file inside it is browser39's.)
+- `persistSessions` on by default (PLAN §10) — **and it is a precondition for
+  consent**: the `click` batch and the `refetch` batch are separate invocations;
+  the accepted cookie only survives between them via the on-disk host session.
+  `Clear all` (pane, M6) wipes mission dirs + index + session dirs.
+- **Consent v0 flow = C10 tactic seam** (ported from
+  `~/dev/eris/src/tools/web/consent.rs`), deterministic Host code — never
+  model-facing:
+  1. Fetch (one batch) → quality computed.
+  2. If `thin` **and** CMP markers hit → run `TACTICS` (v0 = `[LabelClickTactic]`):
+     for each merged label (`labelsForHost` = host profile ∪ `GENERIC_ACCEPT_LABELS`)
+     up to `consentMaxAttempts` (default 2), run a batch `[click(label), fetch(url)]`,
+     keep the best result by char count, stop once `chars ≥ thinThreshold`.
+  3. `ConsentOutcome { attempted, improved, allClicksFailed }` →
+     `consent_attempted` / `consent_improved` (improved iff best chars > initial).
+  4. The consent batches are the **same fetch call** — they do **not** cost extra
+     budget (D-M5.5); they **do** add batch invocations (≤ `consentMaxAttempts`).
+- **Labels collection (C10):** asset `assets/consent_profiles.toml` (per-host
+  `acceptLabels[]` + generic), overridable at
+  `.dsh/web-missions/consent_profiles.toml`.
+- **Cookie preload escape hatch:** for iframe/SPA CMPs browser39 can't click,
+  operator drops cookies into the host config/session (documented in pane hint +
+  README); next fetch picks them up. No UI import in v0. (browser39 2.0.0 runs
+  page JS, so clicks clear more CMPs than the 1.7.x Eris doc implied — but not
+  full-Chromium; preload stays the floor.)
 - Receipt honesty gate: if a receipt is `thin`/`blocked`, `next_step_hint`
   **must** carry `"do not claim content from this page"` — deterministic text
   (the model's honesty contract, enforced by the receipt, not by hoping).
@@ -121,6 +131,7 @@ budget/allowlist, the agent cannot silently exceed it:
 | `persistSessions` | `true` | hand |
 | `cacheHitCountsAsBudget` | `false` | hand |
 | `fetchTimeoutMs` / `thinThresholdChars` | 30000 / 300 | hand (M2) |
+| `consentMaxAttempts` | 2 | hand (C10: max accept-labels tried per thin fetch) |
 | `snippetWindow` | 120 | hand (M4: chars ± around the best hit, line-boundary clipped) |
 | `maxDepth` | 2 | hand (depth fence: max link-hops from nearest seed that may be fetched) |
 | `maxDiscoveredHosts` | 3 | hand (depth fence: max non-seed hosts per mission; seeds exempt) |
@@ -136,7 +147,7 @@ one mechanism, named in DESIGN when the file exists. No UI for knobs until M6.
 | V2 | cache hit with remaining 0 | `cached: true` receipt succeeds (hits free) |
 | V3 | allowlist: file with `www.sparda-berlin.de` → fetch that host | ok; fetch `www.example.com` | `allowlist_denied`, no spawn, no charge |
 | V4 | empty allowlist file + `allowlist: on` | every fetch denied (deny-all default) |
-| V5 | consent: fixture/known CMP page (or synthetic CMP test page served locally) | `consent_attempted: true`, `consent_improved: true` on a passable label; exactly one retry (assert spawn count = 2 for the call) |
+| V5 | consent: fixture/known CMP page (or synthetic CMP test page served locally) | `consent_attempted: true`, `consent_improved: true` on a passable label; batch invocations = initial + ≤ `consentMaxAttempts` consent batches (each = `[click, fetch]`); budget charged **once** for the whole call |
 | V6 | session persistence: fetch host A (consent given) → new mission → fetch host A again | no CMP markers on second mission's fetch (cookies persisted under `~/.dsh/browser39/sessions/`) |
 | V7 | honesty gate: fetch a 404 | `next_step_hint` contains the do-not-claim text |
 | V8 | `maxBytes` truncation on a large page | `quality_signals: ["truncated"]`, stored content ≤ limit |
@@ -161,7 +172,7 @@ one mechanism, named in DESIGN when the file exists. No UI for knobs until M6.
 | D-M5.2 | Exhaustion | hard stop; new mission to continue (no override flag in v0) |
 | D-M5.3 | Allowlist default | deny-all with file on; `allowlist: off` is the documented escape |
 | D-M5.4 | Cache-hit re-gating | no (page already admitted) |
-| D-M5.5 | Consent retries | exactly one per fetch call, no extra budget |
+| D-M5.5 | Consent retries | C10 `LabelClickTactic`: up to `consentMaxAttempts` labels per thin fetch, best-of kept, no extra budget (adds batch invocations only) |
 | D-M5.6 | S6 boundary | allowlist = fetch egress; discovery explicitly outside the no-cloud claim |
 | D-M5.7 | Depth fence | `maxDepth` (default 2) + `maxDiscoveredHosts` (default 3); lineage via stored links; seeds depth 0 / host-exempt; gate pre-spawn; refusals free (no budget charge) |
 | D-M5.8 | Discovery vs fence | search results are not seeds; fetching them consumes discovered-host budget (M7 coupling) |
@@ -177,3 +188,5 @@ one mechanism, named in DESIGN when the file exists. No UI for knobs until M6.
 - **C4 amendment (2026-10-12)** — receipt gains `depth` + `parent_artifact_id`
   (null/0 in M2, filled by the fence).
 - **C6/C7** — born here, frozen at M5 green.
+- **C10** — consent tactic seam born here (review #4, Eris-ported); v0 ships
+  one tactic (`LabelClickTactic`) + labels asset.

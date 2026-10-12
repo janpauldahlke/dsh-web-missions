@@ -9,7 +9,7 @@ Depends on: M2 (fetcher, normalization, ledger writes).
 
 **The heart of the project (D11).** `mission_fetch` on an already-stored
 normalized URL returns an **immediate cache-hit receipt**: `cached: true`,
-**same `artifact_id`**, zero browser39 spawn, zero budget decrement (budget
+**same `artifact_id`**, zero browser39 batch invocation, zero budget decrement (budget
 field absent until M5 — the *behavior* is free). Receipt carries `age_days`
 (S4). The M8 proof assertion is implementable against this phase.
 
@@ -60,16 +60,17 @@ misses. Nothing else changes.
 
 | # | Check | Expected |
 | --- | --- | --- |
-| V1 | fetch URL A (miss) → fetch URL A again | second receipt: `cached: true`, same `artifact_id`, **spawn counter +0 total** (assert exactly one spawn for both fetches) |
+| V1 | fetch URL A (miss) → fetch URL A again | second receipt: `cached: true`, same `artifact_id`, **batch counter +0 on the second** (assert exactly one batch invocation for both fetches) |
 | V2 | fetch A (miss), fetch same host different path B (miss), fetch A again | V1 holds; B's first receipt carries `hint_find_first` |
 | V3 | `force: true` on stored URL | new spawn, **same** `artifact_id`, ledger row updated in place (row count unchanged), receipt `cached: false`, `age_days: 0` |
 | V4 | `age_days` arithmetic | stored page, sleep/wrap `fetched_at` -25h → receipt `age_days ≈ 1.04` (test with injected clock) |
-| V5 | blocked URL re-fetch (no force) | `cached: true` with `page_quality: 'blocked'`, zero spawn |
+| V5 | blocked URL re-fetch (no force) | `cached: true` with `page_quality: 'blocked'`, zero batch invocation |
 | V6 | redirect-equivalent URL (the one that redirected to A, fetched directly) | cache hit (same normalized final-URL key as M2 V6) |
 
 **The V1 assertion is the seed of the M8 DoD proof** — keep it as a named
-script `scripts/accept-cache.mjs` (curl + spawn-counter check) so M8 reuses
-it, not reinvents it.
+script `scripts/accept-cache.mjs` (curl + **batch-invocation** counter check —
+count `browser39 batch` spawns via a wrapper/log, not OS process scans) so M8
+reuses it, not reinvents it.
 
 ## Scope guard
 

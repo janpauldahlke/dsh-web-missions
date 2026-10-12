@@ -15,8 +15,9 @@ set, run by the model in a normal mission, end-to-end on `:3090`:
   synthesizes Kurzprofile to `mission.md` with `artifact_id` citations.
   **The plugin does not implement ratings — the model does.**
 - **Proof assertion:** S1 end-to-end **plus** a second `mission_fetch` of the
-  same URL asserts `cached: true` with **no second browser spawn**
-  (`scripts/accept-cache.mjs`, built in M3, run here as the formal DoD check).
+  same URL asserts `cached: true` with **no second `browser39 batch`
+  invocation** (`scripts/accept-cache.mjs`, built in M3, run here as the formal
+  DoD check).
 - **S2 news dig** (secondary): depth + citations, same mission or a second
   one — model-owned outcome.
 - **S3 chart snapshot** (secondary): a stored artifact that is a chart/image
@@ -71,8 +72,8 @@ URLs must be live + allowlist-able; the *set* below is the frozen intent):
 | --- | --- | --- |
 | A1 | ≥ 8 of 10 entities have a stored `full` page | script over the ledger |
 | A2 | no entity Kurzprofil cites a `thin`/`blocked` page as its source | script: grep mission.md citations × ledger quality |
-| A3 | **zero-spawn cache proof** | `accept-cache.mjs`: second fetch of a stored URL → `cached: true`, spawn counter unchanged |
-| A4 | no refetch loops | ledger: ≤ 1 non-forced row per normalized URL; total spawns ≤ budget |
+| A3 | **zero-batch cache proof** | `accept-cache.mjs`: second fetch of a stored URL → `cached: true`, **batch-invocation counter unchanged** (no new `browser39 batch`) |
+| A4 | no refetch loops | ledger: ≤ 1 non-forced row per normalized URL; total fetch-call batches ≤ budget (consent batches don't count against budget) |
 | A5 | budget never exhausted (or exhaustion handled cleanly) | manifest `budget` + receipts |
 | A6 | `mission.md` has per-entity blocks + citations for all A1 entities | script: 10 sections, each with ≥1 `p-…` citation |
 
