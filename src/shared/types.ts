@@ -11,6 +11,11 @@ export const VERSION = '1.0.0'
 /** M0 route base is fixed now; M1+ adds routes under it. */
 export const HEALTH_ROUTE = '/api/web-missions/health'
 
+/** Pane data routes (M1, D-M1.5 API-first; polled by the M6 pane). */
+export const MISSIONS_ROUTE = '/api/web-missions/missions'
+export const MISSIONS_ID_PREFIX = '/api/web-missions/missions/'
+export const MISSION_ID_PATTERN = /^m-[0-9a-f]{8}$/
+
 /** Rightbar tab identity (D-M0.3): id/label = web-missions / "Missions". */
 export const TAB_ID = 'web-missions'
 export const TAB_KIND = 'web-missions'

@@ -17,6 +17,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { HEALTH_ROUTE, PLUGIN, VERSION } from '../shared/types.ts'
+import { registerMissionsRoutes } from './routes.ts'
 import { registerMissionTools } from './tools.ts'
 
 export const name = PLUGIN
@@ -74,6 +75,7 @@ export function apply(ctx: Context): void {
   ctx.inject(['webServer'], (webCtx: Context) => {
     try {
       registerHealthRoute(webCtx)
+      registerMissionsRoutes(webCtx)
     } catch (error) {
       webCtx.logger?.(PLUGIN)
         .error('route registration failed: %s', errorMessage(error))
