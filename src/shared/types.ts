@@ -36,3 +36,45 @@ export interface HealthPayload {
   time?: string
   error?: string
 }
+
+/**
+ * C3 — PageFetcher port + FetchedPage (frozen at M2 green; DESIGN.md §C3).
+ * `selector` is NOT on this port (S2): fetch stores the canonical page;
+ * selection is a query-time concern (mission_find, M4).
+ */
+export interface PageFetcher {
+  fetch(
+    url: string,
+    opts?: {
+      signal?: AbortSignal
+      /** Host key (C7); v0 = lowercased hostname, no port. */
+      sessionKey?: string
+    },
+  ): Promise<FetchedPage>
+}
+
+export type PageQuality = 'full' | 'thin' | 'blocked'
+
+export interface FetchedPage {
+  /** As requested. */
+  url: string
+  /** After redirects (browser39 reports the final URL). */
+  finalUrl: string
+  status: number
+  contentType: string
+  title: string
+  /** Main text/markdown (browser39 output). */
+  content: string
+  /** Absolute URLs, resolved against finalUrl. */
+  links: { url: string; text: string }[]
+  byteLength: number
+  /** ISO 8601 UTC. */
+  fetchedAt: string
+  /** Deterministic, set by our code (S7) — never by browser39. */
+  quality: PageQuality
+  /** Why (e.g. "text<300chars", "cmp-marker:cookie", "http-404"). */
+  qualitySignals: string[]
+  /** M2: false/false; M5 fills (schema stability). */
+  consentAttempted: boolean
+  consentImproved: boolean
+}
