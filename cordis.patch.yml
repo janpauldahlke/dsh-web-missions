@@ -1,0 +1,6 @@
+# dsh-local-web-missions layer: one Loader row for the dual-face package.
+# Host half = package root export (lib/index.js); browser half = ./client
+# export (lib/client.js) discovered from the package's dsh.client declaration.
+- insert:
+    - id: web-missions
+      name: dsh-local-web-missions

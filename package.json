@@ -1,0 +1,73 @@
+{
+  "name": "dsh-local-web-missions",
+  "version": "1.0.0",
+  "description": "Persist-and-find web research for DeepSeek Harness local agents (browser39 fetch, mission store, lexical find, budget + allowlist + depth fence). No cloud search in v0.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "media"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/janpauldahlke/dsh-web-missions.git"
+  },
+  "homepage": "https://github.com/janpauldahlke/dsh-web-missions#readme",
+  "bugs": {
+    "url": "https://github.com/janpauldahlke/dsh-web-missions/issues"
+  },
+  "scripts": {
+    "build": "node build.mjs && tsc --noEmit"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek-harness-plugin",
+    "dsh",
+    "cordis",
+    "cordis-plugin",
+    "mission",
+    "web-research",
+    "browser39",
+    "persist",
+    "cache",
+    "allowlist",
+    "local-agents",
+    "coding-agents",
+    "sidebar",
+    "web-ui"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  },
+  "dependencies": {
+    "@aquintanar/browser39": "2.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "esbuild": "^0.25.0",
+    "react": "^18.3.0",
+    "typescript": "^5.6.0"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}
