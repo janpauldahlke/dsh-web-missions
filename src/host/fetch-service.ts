@@ -1,17 +1,25 @@
 /**
- * mission_fetch service (M2 slice 2.5, C4 base receipt).
+ * mission_fetch service (M2 base + M3 cache).
  *
  * Pipeline: resolve mission → normalize requested URL (pre-spawn guard) →
- * ledger lookup (M2: code path exists, always misses — M3 flips cache-hit) →
- * fetcher.fetch → storeArtifact → appendFetchedRow → C4 receipt.
+ * ledger lookup (M3: a hit returns an immediate cache receipt, ZERO spawn) →
+ * fetcher.fetch → storeArtifact (new id, or in-place overwrite on force /
+ * redirect-collapse) → ledger row (append, or update in place — one row per
+ * normalized URL per mission) → C4 receipt.
  *
- * Scope guard: no cache-hit receipt (M3), no budget decrement (M5), no consent
- * retry (M5). `depth: 0` / `parent_artifact_id: null` (schema stable, filled
- * in M5). Errors propagate as StoreError / FetchError; the tool layer renders
+ * M3 (D11 rules live):
+ * - hit (no force)  → cached:true, same artifact_id, age_days (S4), zero spawn
+ * - force on a hit  → re-fetch, SAME artifact_id, row updated in place,
+ *                     cached:false, age_days:0 (D-M3.2)
+ * - fresh receipt   → age_days:0; same-host misses carry `hint_find_first`
+ *                     (soft gate, D-M3.3: ≥1 stored page on the host)
+ * - age is information, not a gate (D-M3.1): no expiry in v0
+ *
+ * Errors propagate as StoreError / FetchError; the tool layer renders
  * `{ ok: false, error: '<code>: <msg>' }`.
  */
 import type { FetchedPage, PageFetcher } from '../shared/types.ts'
-import { storeArtifact, type StoredArtifact } from './artifacts.ts'
+import { PREVIEW_HEAD_CHARS, readArtifact, storeArtifact, type StoredArtifact } from './artifacts.ts'
 import { normalizeUrl } from './normalize.ts'
 import { FetchError } from './fetcher.ts'
 import {
@@ -19,19 +27,23 @@ import {
   appendFetchedRow,
   readManifest,
   resolveMissionId,
+  updateFetchedRow,
   type FetchedRow,
   type Manifest,
 } from './store.ts'
 
-/** C4 receipt (M2 base). Additive only — M3 adds nothing here, M5 adds budget. */
+/** C4 receipt (M2 base; M3: `cached`/`age_days` become live values). */
 export interface FetchReceipt {
   mission_id: string
   artifact_id: string
   url: string
   final_url: string
-  cached: false
+  /** M3: true when served from the ledger with zero browser spawn. */
+  cached: boolean
+  /** ISO 8601 UTC of the stored fetch (hit: the original; fresh: now). */
   fetched_at: string
-  age_days: 0
+  /** (now - fetched_at) / 86400000, 2 decimals, floored at 0 (S4). Fresh = 0. */
+  age_days: number
   page_quality: FetchedPage['quality']
   quality_signals: string[]
   consent_attempted: boolean
@@ -43,6 +55,12 @@ export interface FetchReceipt {
   visited_count: number
   next_step_hint: string
   sample_links: string[]
+  /**
+   * M3 soft gate (D-M3.3): present on fresh receipts when the mission already
+   * has ≥1 stored page on the requested host. Text-only until mission_find
+   * (M4); the fetch itself always proceeds.
+   */
+  hint_find_first?: string
 }
 
 /** v0 session key (C3): lowercased hostname, no port. */
@@ -51,12 +69,22 @@ export function hostSessionKey(url: string): string {
 }
 
 /**
- * Cache lookup by ledger key. M2: correct and present, but the fetch proceeds
- * unconditionally (V4: two fetches → two rows / two artifacts). M3 turns a
- * hit into a `cached: true` receipt with zero browser spawn.
+ * Cache lookup by ledger key (M3): a row hits when the requested key matches
+ * its `normalized_url` (the normalized FINAL url, D-M2.2) OR any of its
+ * `requested_keys` (normalized URLs that previously redirected/stored onto
+ * this row — makes a redirecting URL a zero-spawn hit on re-fetch, M3 V6).
  */
 export function findLedgerRow(manifest: Manifest, key: string): FetchedRow | undefined {
-  return manifest.fetched.find((r) => r.normalized_url === key)
+  return manifest.fetched.find(
+    (r) => r.normalized_url === key || (r.requested_keys?.includes(key) ?? false),
+  )
+}
+
+/** (now - fetched_at) / 86400000, 2 decimals, floored at 0 (S4). */
+export function ageDays(fetchedAt: string, nowMs: number): number {
+  const t = Date.parse(fetchedAt)
+  if (!Number.isFinite(t)) return 0
+  return Math.max(0, Math.round(((nowMs - t) / 86400000) * 100) / 100)
 }
 
 function nextStepHint(quality: FetchedPage['quality']): string {
@@ -70,20 +98,39 @@ function nextStepHint(quality: FetchedPage['quality']): string {
   }
 }
 
+/** M3 cached wording (M_3_cache.md hit path, verbatim intent). */
+function cachedNextStepHint(quality: FetchedPage['quality'], age: number): string {
+  if (quality === 'full') {
+    return `cached: already stored (age ${age}d). Use mission_find, or pass force: true to re-fetch.`
+  }
+  return `cached: stored as ${quality} (age ${age}d). Re-fetch with force: true if you expect new content.`
+}
+
 export interface RunFetchArgs {
   url: string
   mission_id?: string
-  /** Accepted now (schema stability); has no effect until M3. */
+  /** M3: re-fetch even when stored — overwrite in place, same artifact_id. */
   force?: boolean
   /** Hand config (ENV.md); default 2000. */
   chunkChars?: number
 }
 
-export async function runFetch(root: string, fetcher: PageFetcher, args: RunFetchArgs): Promise<FetchReceipt> {
-  const url = args.url?.trim()
-  if (!url) throw new StoreError('bad_args', 'url is required')
+export interface RunFetchOptions {
+  /** Injectable clock (M3 V4: age_days arithmetic); default Date.now. */
+  now?: () => number
+}
+
+export async function runFetch(
+  root: string,
+  fetcher: PageFetcher,
+  args: RunFetchArgs,
+  opts: RunFetchOptions = {},
+): Promise<FetchReceipt> {
+  const now = opts.now ?? Date.now
 
   // 1. resolve mission (D-M1.4 default rule; explicit id wins)
+  const url = args.url?.trim()
+  if (!url) throw new StoreError('bad_args', 'url is required')
   const missionId = resolveMissionId(root, args.mission_id)
 
   // 2. normalize BEFORE any spawn (V3: unparsable → normalize_failed, zero batch)
@@ -91,28 +138,61 @@ export async function runFetch(root: string, fetcher: PageFetcher, args: RunFetc
   const manifest = readManifest(root, missionId)
   if (!manifest) throw new StoreError('unknown_mission', `no such mission: ${missionId}`)
 
-  // 3. ledger lookup (M2: no-op behaviorally; M3 flips to cache-hit)
-  void findLedgerRow(manifest, requestedKey)
-  void args.force
+  // 3. M3 hit path — no spawn (V1/V2/V5/V6)
+  const hit = findLedgerRow(manifest, requestedKey)
+  const force = args.force === true
+  if (hit && !force) {
+    return buildHitReceipt(root, missionId, url, manifest, hit, now())
+  }
 
   // 4. fetch (timeout / spawn failures surface as FetchError fetch_failed / spawn_failed)
   const page = await fetcher.fetch(url, { sessionKey: hostSessionKey(url) })
 
-  // 5. store artifact (page.json + links + chunks, or page.json only when blocked)
-  const stored: StoredArtifact = storeArtifact(root, missionId, page, { chunkChars: args.chunkChars })
+  // 5. ledger target (D-M3.2: one row per normalized URL per mission)
+  //    - a row already exists for the FINAL key (redirect-collapse onto a
+  //      stored page) → update it in place;
+  //    - force on a hit whose final key moved → update the hit row in place;
+  //    - otherwise a brand-new row.
+  const finalKey = normalizeUrl(page.finalUrl)
+  const target =
+    manifest.fetched.find((r) => r.normalized_url === finalKey) ?? (force && hit ? hit : undefined)
+  const stored: StoredArtifact = storeArtifact(root, missionId, page, {
+    chunkChars: args.chunkChars,
+    ...(target ? { artifactId: target.artifact_id, replace: true } : {}),
+  })
 
-  // 6. ledger row — key = normalized FINAL url (D-M2.2)
+  // Merge the requested alias into the row's alias list (ordered, deduped) so
+  // every redirecting URL that stores onto this row keeps hitting.
+  const requestedKeys = [...new Set([...(target?.requested_keys ?? []), requestedKey])]
   const row: FetchedRow = {
-    normalized_url: normalizeUrl(page.finalUrl),
+    normalized_url: finalKey,
     url: page.finalUrl,
     artifact_id: stored.artifactId,
     quality: page.quality,
     fetched_at: page.fetchedAt,
     consent_improved: page.consentImproved,
+    requested_keys: requestedKeys,
   }
-  const updated = appendFetchedRow(root, missionId, row)
+  const updated = target
+    ? updateFetchedRow(root, missionId, target.normalized_url, row)
+    : appendFetchedRow(root, missionId, row)
 
-  // 7. C4 base receipt
+  // 6. M3 soft gate (D-M3.3): same-host stored pages, excluding the row this
+  //    fetch just wrote/updated (a first-ever page on the host gets no hint).
+  const others = manifest.fetched.filter((r) => r !== target)
+  const sameHost = others.filter((r) => {
+    try {
+      return hostSessionKey(r.url) === hostSessionKey(url)
+    } catch {
+      return false
+    }
+  }).length
+  const hintFindFirst =
+    sameHost >= 1
+      ? `this host has ${sameHost} stored pages — consider mission_find before fetching a new path`
+      : undefined
+
+  // 7. C4 receipt (fresh: cached:false, age_days:0)
   return {
     mission_id: missionId,
     artifact_id: stored.artifactId,
@@ -131,6 +211,40 @@ export async function runFetch(root: string, fetcher: PageFetcher, args: RunFetc
     parent_artifact_id: null,
     visited_count: updated.fetched.length,
     next_step_hint: nextStepHint(page.quality),
+    sample_links: stored.links.slice(0, 5).map((l) => l.url),
+    ...(hintFindFirst ? { hint_find_first: hintFindFirst } : {}),
+  }
+}
+
+/** M3 cache-hit receipt: read the stored artifact, zero spawn. */
+function buildHitReceipt(
+  root: string,
+  missionId: string,
+  url: string,
+  manifest: Manifest,
+  hit: FetchedRow,
+  nowMs: number,
+): FetchReceipt {
+  const stored = readArtifact(root, missionId, hit.artifact_id)
+  const age = ageDays(hit.fetched_at, nowMs)
+  return {
+    mission_id: missionId,
+    artifact_id: hit.artifact_id,
+    url,
+    final_url: hit.url,
+    cached: true,
+    fetched_at: hit.fetched_at,
+    age_days: age,
+    page_quality: stored.page.quality,
+    quality_signals: stored.page.qualitySignals ?? [],
+    consent_attempted: stored.page.consentAttempted ?? false,
+    consent_improved: stored.page.consentImproved ?? false,
+    chunk_count: stored.chunkCount,
+    preview_head: (stored.page.content ?? '').slice(0, PREVIEW_HEAD_CHARS),
+    depth: 0,
+    parent_artifact_id: null,
+    visited_count: manifest.fetched.length,
+    next_step_hint: cachedNextStepHint(stored.page.quality, age),
     sample_links: stored.links.slice(0, 5).map((l) => l.url),
   }
 }

@@ -40,6 +40,15 @@ export interface FetchedRow {
   quality: string
   fetched_at: string
   consent_improved?: boolean
+  /**
+   * M3 (D-M2.2 extension): normalized forms of the URLs that were requested
+   * when this row was written/updated (ordered, deduped). Lets a redirecting
+   * URL (e.g. /redir → A) be a zero-spawn cache hit on re-fetch even though
+   * the key is norm(final). Multiple aliases that collapse onto the same row
+   * each survive (a re-fetch of ANY alias hits). Optional — M2-era rows
+   * predate it.
+   */
+  requested_keys?: string[]
 }
 
 export interface Manifest {
@@ -293,6 +302,23 @@ export function appendFetchedRow(root: string, missionId: string, row: FetchedRo
   const manifest = readManifest(root, missionId)
   if (!manifest) throw new StoreError('unknown_mission', `no such mission: ${missionId}`)
   manifest.fetched.push(row)
+  manifest.updated_at = new Date().toISOString()
+  writeManifest(root, manifest)
+  return manifest
+}
+
+/**
+ * Update a visited-ledger row IN PLACE (M3, D-M3.2): `force: true` overwrites
+ * the artifact and refreshes the row for the same ledger key, so the ledger
+ * stays one row per normalized URL per mission. Matches on the row's
+ * `normalized_url` (the caller's key), replacing all fields except identity.
+ */
+export function updateFetchedRow(root: string, missionId: string, key: string, row: FetchedRow): Manifest {
+  const manifest = readManifest(root, missionId)
+  if (!manifest) throw new StoreError('unknown_mission', `no such mission: ${missionId}`)
+  const i = manifest.fetched.findIndex((r) => r.normalized_url === key)
+  if (i === -1) throw new StoreError('corrupt', `no ledger row for key ${key}`)
+  manifest.fetched[i] = row
   manifest.updated_at = new Date().toISOString()
   writeManifest(root, manifest)
   return manifest

@@ -8,8 +8,11 @@
 //   V1  fetch fixture /good (full page)      → receipt + on-disk artifacts + ledger row
 //   V2  fetch fixture /missing (404)         → blocked, no chunks, ledger row quality blocked
 //   V3  fetch unparsable url                 → normalize_failed, batch counter unchanged
-//   V4  fetch /good again                    → two rows, two distinct artifacts (M2 pre-state)
-//   V5  BROWSER39_BIN → dead path, fetch     → spawn_failed; mission still usable after
+//   V4  fetch /good again                    → M3: immediate cache hit (cached:true,
+//        same artifact, no new row, zero new batch) — M2 pre-state (two rows)
+//        superseded by D-M3.2
+//   V5  BROWSER39_BIN → dead path, fetch NOT-yet-stored url → spawn_failed;
+//        mission still usable after (re-fetch /good is now a zero-spawn hit)
 //   V6  fetch /redir (302 → /redir2 → 302 → /good?arrived=1)
 //       → final_url recorded; ledger key = normalized FINAL url; a direct fetch
 //         of the final url shares the same key
@@ -135,26 +138,26 @@ check('V3: NO batch invocation', callCount() === callsBeforeV3, 'calls ' + calls
 const stV3 = await byName.mission_status.execute({ mission_id: mid, cwd: repoRoot }, exec())
 check('V3: no ledger row added', stV3.visited.length === 2, 'visited=' + stV3.visited.length)
 
-// --- V4 ------------------------------------------------------------------------
+// --- V4 (M2 pre-state superseded by M3: a re-fetch is now a cache hit) --------
 const v4 = await byName.mission_fetch.execute({ url: base + '/good', mission_id: mid, cwd: repoRoot }, exec())
-check('V4: second fetch clean', !v4.error && v4.cached === false, J(v4.error || { c: v4.cached }))
-check('V4: distinct artifact', v4.artifact_id !== v1.artifact_id, J([v1.artifact_id, v4.artifact_id]))
+check('V4: second fetch is a cache hit', !v4.error && v4.cached === true, J(v4.error || { c: v4.cached }))
+check('V4: same artifact (no overwrite, no new id)', v4.artifact_id === v1.artifact_id, J([v1.artifact_id, v4.artifact_id]))
 const stV4 = await byName.mission_status.execute({ mission_id: mid, cwd: repoRoot }, exec())
-const goodRows = stV4.visited.filter((r) => r.normalized_url === stV4.visited[0].normalized_url)
-check('V4: two rows for same key', goodRows.length === 2, 'rows=' + goodRows.length)
-check('V4: two distinct artifacts on disk', new Set(goodRows.map((r) => r.artifact_id)).size === 2, J(goodRows.map((r) => r.artifact_id)))
-check('V4: total batches = 3 (v1,v2,v4)', callCount() === 3, 'calls=' + callCount())
+check('V4: still one row for the key (D-M3.2)', stV4.visited.filter((r) => r.normalized_url === stV4.visited[0].normalized_url).length === 1, 'rows=' + stV4.visited.length)
+check('V4: total batches = 2 (v1,v2 — v4 was zero-spawn)', callCount() === 2, 'calls=' + callCount())
 
 // --- V5 ------------------------------------------------------------------------
+// /good?dead=1 serves the /good page (query is a distinct normalized URL) and
+// is NOT yet stored — stored URLs would be cache hits, not spawns (M3).
 const deadBin = join(work, 'definitely-missing-browser39')
 process.env.BROWSER39_BIN = deadBin
-const v5 = await byName.mission_fetch.execute({ url: base + '/good', mission_id: mid, cwd: repoRoot }, exec())
+const v5 = await byName.mission_fetch.execute({ url: base + '/good?dead=1', mission_id: mid, cwd: repoRoot }, exec())
 check('V5: error spawn_failed', v5.ok === false && v5.error.startsWith('spawn_failed:'), J(v5))
 process.env.BROWSER39_BIN = wrapper
 const v5b = await byName.mission_fetch.execute({ url: base + '/good', mission_id: mid, cwd: repoRoot }, exec())
-check('V5: mission still usable after failure', !v5b.error && v5b.page_quality === 'full', J(v5b.error || { q: v5b.page_quality }))
+check('V5: mission still usable after failure (zero-spawn hit)', !v5b.error && v5b.cached === true && v5b.page_quality === 'full', J(v5b.error || { c: v5b.cached, q: v5b.page_quality }))
 const stV5 = await byName.mission_status.execute({ mission_id: mid, cwd: repoRoot }, exec())
-check('V5: no row for failed fetch', stV5.visited.length === 4, 'visited=' + stV5.visited.length) // v1,v2,v4,v5b
+check('V5: no row for failed fetch', stV5.visited.length === 2, 'visited=' + stV5.visited.length) // v1,v2 only
 
 // --- V6 ------------------------------------------------------------------------
 const v6 = await byName.mission_fetch.execute({ url: base + '/redir', mission_id: mid, cwd: repoRoot }, exec())
@@ -176,7 +179,7 @@ const list = await (await fetch(liveBase + '/api/web-missions/missions')).json()
 const liveRow = (list.active || []).find((m) => m.mission_id === mid)
 check('live: acceptance mission visible via live routes', !!liveRow && liveRow.status === 'active', J(liveRow))
 if (liveRow) {
-  const totalRows = 6 // v1, v2, v4, v5b, v6, v6b
+  const totalRows = 3 // /good (v1), /missing (v2), /good?arrived=1 (v6); v4/v5b/v6b are M3 cache hits (no rows)
   check('live: rows written in-process visible on live route', liveRow.visited === totalRows && liveRow.pages === totalRows, J({ visited: liveRow.visited, pages: liveRow.pages, expected: totalRows }))
   const byId = await (await fetch(liveBase + '/api/web-missions/missions/' + mid)).json()
   check('live: by-id route serves ledger', Array.isArray(byId.visited) && byId.visited.length === totalRows, 'visited=' + (byId.visited || []).length)

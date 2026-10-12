@@ -204,11 +204,15 @@ export function registerMissionTools(ctx: Context): () => void {
     name: 'mission_fetch',
     description:
       'Fetch a URL with the local browser39 and store it in the mission ' +
-      '(page.json + text chunks + links, plus a visited-ledger row). Returns ' +
-      'a receipt: page_quality (full | thin | blocked), chunk_count, ' +
-      'preview_head, sample_links (≤5), and a deterministic next_step_hint. ' +
-      'Blocked pages (4xx/5xx, empty) are stored too, so dead URLs are known, ' +
-      'not guessed.',
+      '(page.json + text chunks + links, plus a visited-ledger row). A URL ' +
+      'already stored (same normalized final URL, or one that previously ' +
+      'redirected onto it) returns an IMMEDIATE cache-hit receipt: cached:' +
+      ' true, same artifact_id, age_days, zero browser spawn. Pass force: ' +
+      'true to re-fetch (overwrites in place, same artifact_id). Fresh ' +
+      'receipts carry page_quality (full | thin | blocked), chunk_count, ' +
+      'preview_head, sample_links (≤5), and a deterministic next_step_hint; ' +
+      'same-host misses add hint_find_first. Blocked pages (4xx/5xx, empty) ' +
+      'are stored too, so dead URLs are known, not guessed.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -216,7 +220,7 @@ export function registerMissionTools(ctx: Context): () => void {
       properties: {
         url: { type: 'string', description: 'Absolute http(s) URL to fetch (required).' },
         mission_id: { type: 'string', description: 'Mission id (default: most recently started active mission).' },
-        force: { type: 'boolean', description: 'Accepted for schema stability; takes effect from M3 (cache).' },
+        force: { type: 'boolean', description: 'Re-fetch even if already stored (overwrites in place, same artifact_id).' },
         cwd: CWD_PARAM,
       },
     },
@@ -245,6 +249,7 @@ export function registerMissionTools(ctx: Context): () => void {
           visited_count: { type: 'integer' },
           next_step_hint: { type: 'string' },
           sample_links: { type: 'array' },
+          hint_find_first: { type: 'string' },
         },
       },
       render: renderJson,

@@ -1,12 +1,15 @@
-// Fetch service smoke (M2 slices 2.4 + 2.5):
+// Fetch service smoke (M2 slices 2.4 + 2.5, M3 cache):
 //   A) service-level harness (tmpdir bundle, child process): splitContent,
 //      dedupeLinks, storeArtifact (full + blocked), appendFetchedRow,
-//      hostSessionKey, runFetch with a fake counting fetcher (zero-spawn
-//      assertions, V4 pre-state) and with the REAL Browser39Fetcher against a
-//      local HTTP server.
+//      hostSessionKey, runFetch with a fake counting fetcher (M3 cache-hit /
+//      force / hint_find_first / ageDays assertions, zero-spawn) and with the
+//      REAL Browser39Fetcher against a local HTTP server (incl. M3 hit,
+//      backdated-row age_days with an injected clock, force overwrite, and a
+//      redirect alias /redir → /target).
 //   B) tool-level harness (repo-context bundle, child process): applies the
 //      BUILT lib, asserts 5 tools registered incl. mission_fetch, runs
 //      mission_start + mission_fetch end-to-end (receipt + on-disk artifacts),
+//      M3 tool-level cache hit + force (one row per URL),
 //      404 → blocked receipt, unparsable → normalize_failed (no ledger row),
 //      dead BROWSER39_BIN → spawn_failed, empty cwd → no_mission.
 // Exits non-zero on any failure.
@@ -54,7 +57,9 @@ const pages = {
   '/missing': { status: 404, body: '<html><head><title>404 Not Found</title></head><body>Not Found Here</body></html>' },
 }
 const server = http.createServer((req, res) => {
-  const spec = pages[req.url.split('?')[0]]
+  const path = req.url.split('?')[0]
+  if (path === '/redir') { res.writeHead(302, { Location: '/target' }); res.end(); return }
+  const spec = pages[path]
   if (!spec) { res.writeHead(404); res.end('nope'); return }
   res.writeHead(spec.status || 200, { 'Content-Type': 'text/html; charset=utf-8' })
   res.end(spec.body)
@@ -66,12 +71,12 @@ const base = 'http://127.0.0.1:' + server.address().port
 // --- Harness A: service level --------------------------------------------------
 const harnessA = `
 import http from 'node:http'
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Browser39Fetcher } from '${abs('../src/host/fetcher.ts')}'
 import { normalizeUrl } from '${abs('../src/host/normalize.ts')}'
 import { splitContent, dedupeLinks, storeArtifact, PREVIEW_HEAD_CHARS } from '${abs('../src/host/artifacts.ts')}'
-import { runFetch, hostSessionKey, findLedgerRow } from '${abs('../src/host/fetch-service.ts')}'
+import { runFetch, hostSessionKey, findLedgerRow, ageDays } from '${abs('../src/host/fetch-service.ts')}'
 import { startMission, readManifest, appendFetchedRow, StoreError } from '${abs('../src/host/store.ts')}'
 import type { FetchedPage } from '${abs('../src/shared/types.ts')}'
 
@@ -197,11 +202,37 @@ if (receipt) {
   check('fake: sample_links ≤5', receipt.sample_links.length === 1, JSON.stringify(receipt.sample_links))
   check('fake: chunk_count', receipt.chunk_count === 2, 'n=' + receipt.chunk_count)
 }
-// V4 pre-state: second fetch of the SAME requested URL → second row
+// M3: second fetch of the SAME requested URL → cache hit, ZERO spawn
 const rowsBefore = readManifest(root, id).fetched.length
-await runFetch(root, fakeFetcher, { url: base + '/redirect-ish' })
+const hitR = await runFetch(root, fakeFetcher, { url: base + '/redirect-ish' })
 const rowsAfter = readManifest(root, id).fetched.length
-check('fake: V4 two fetches → two rows', rowsAfter === rowsBefore + 1 && fetchCalls === 2, 'rows ' + rowsBefore + '->' + rowsAfter + ' calls=' + fetchCalls)
+check('M3: hit cached:true, same artifact, age 0', hitR.cached === true && hitR.artifact_id === receipt.artifact_id && hitR.age_days === 0, JSON.stringify({ c: hitR.cached, a: hitR.artifact_id, first: receipt.artifact_id, age: hitR.age_days }))
+check('M3: hit zero spawn', fetchCalls === 1, 'calls=' + fetchCalls)
+check('M3: hit adds no row', rowsAfter === rowsBefore, 'rows ' + rowsBefore + '->' + rowsAfter)
+check('M3: cached hint wording', hitR.next_step_hint.startsWith('cached: already stored'), hitR.next_step_hint)
+check('M3: first fresh receipt had no hint', receipt.hint_find_first === undefined, JSON.stringify(receipt.hint_find_first))
+
+// M3: ageDays arithmetic (S4: 25h → 1.04; floor at 0)
+check('M3: ageDays 25h → 1.04', ageDays(new Date(Date.now() - 25 * 3600e3).toISOString(), Date.now()) === 1.04)
+check('M3: ageDays floors at 0', ageDays(new Date(Date.now() + 1000).toISOString(), Date.now()) === 0)
+
+// M3: force → same artifact id, row refreshed in place (one row per URL)
+const forceR = await runFetch(root, fakeFetcher, { url: base + '/redirect-ish', force: true })
+check('M3: force fresh receipt, same artifact', forceR.cached === false && forceR.age_days === 0 && forceR.artifact_id === receipt.artifact_id, JSON.stringify({ c: forceR.cached, a: forceR.artifact_id }))
+check('M3: force kept one row', readManifest(root, id).fetched.length === rowsBefore, 'rows=' + readManifest(root, id).fetched.length)
+const rowAfterForce = readManifest(root, id).fetched.find((r) => r.normalized_url === normalizeUrl(base + '/target?final=1'))
+check('M3: force row refreshed, alias kept', !!rowAfterForce && rowAfterForce.artifact_id === receipt.artifact_id && (rowAfterForce.requested_keys ?? []).includes(normalizeUrl(base + '/redirect-ish')), JSON.stringify(rowAfterForce))
+
+// M3: hint_find_first on same-host miss (a stored page exists on this host)
+appendFetchedRow(root, id, {
+  normalized_url: normalizeUrl(base + '/first-stored'),
+  url: base + '/first-stored',
+  artifact_id: receipt.artifact_id,
+  quality: 'full',
+  fetched_at: new Date().toISOString(),
+})
+const hintR = await runFetch(root, fakeFetcher, { url: base + '/new-path' })
+check('M3: hint_find_first on same-host miss', hintR.hint_find_first === 'this host has 1 stored pages — consider mission_find before fetching a new path', JSON.stringify(hintR.hint_find_first))
 
 // normalize_failed → zero fetch calls (V3)
 const callsBefore = fetchCalls
@@ -235,6 +266,37 @@ const blocked = await runFetch(root, realFetcher, { url: base + '/missing' })
 check('real: 404 → blocked receipt (ok, not error)', blocked.page_quality === 'blocked' && blocked.chunk_count === 0, JSON.stringify(blocked.quality_signals))
 check('real: blocked ledger row quality', readManifest(root, id).fetched.some((r) => r.normalized_url === normalizeUrl(base + '/missing') && r.quality === 'blocked'))
 check('real: no chunks dir for blocked', !existsSync(join(root, id, 'pages', blocked.artifact_id, 'chunks')))
+
+// --- M3 real: cache hit (receipt served from disk, zero spawn)
+const hit2 = await runFetch(root, realFetcher, { url: base + '/target' })
+check('real M3: hit cached, same artifact, age 0', hit2.cached === true && hit2.artifact_id === full.artifact_id && hit2.age_days === 0 && hit2.final_url === base + '/target', JSON.stringify({ c: hit2.cached, a: hit2.artifact_id, age: hit2.age_days }))
+check('real M3: hit preview from stored page', hit2.preview_head.includes('SENTINEL-FULL-TEXT'), hit2.preview_head.slice(0, 40))
+check('real M3: hit sample_links from stored links', hit2.sample_links.includes(base + '/other'), JSON.stringify(hit2.sample_links))
+check('real M3: hit chunk_count from chunks dir', hit2.chunk_count === full.chunk_count, 'hit=' + hit2.chunk_count + ' full=' + full.chunk_count)
+
+// --- M3 real: age_days via backdated row + injected clock (V4, 25h → 1.04)
+const nowMs = Date.now()
+{
+  const m = readManifest(root, id)
+  const r = m.fetched.find((x) => x.normalized_url === normalizeUrl(base + '/target'))
+  r.fetched_at = new Date(nowMs - 25 * 3600e3).toISOString()
+  writeFileSync(join(root, id, 'manifest.json'), JSON.stringify(m, null, 2))
+}
+const aged = await runFetch(root, realFetcher, { url: base + '/target' }, { now: () => nowMs })
+check('real M3: aged hit age_days 1.04', aged.cached === true && aged.age_days === 1.04, JSON.stringify({ c: aged.cached, age: aged.age_days }))
+check('real M3: aged cached hint carries age', aged.next_step_hint === 'cached: already stored (age 1.04d). Use mission_find, or pass force: true to re-fetch.', aged.next_step_hint)
+
+// --- M3 real: force overwrite in place (same artifact id, one row)
+const forced2 = await runFetch(root, realFetcher, { url: base + '/target', force: true })
+check('real M3: force fresh, same artifact', forced2.cached === false && forced2.age_days === 0 && forced2.artifact_id === full.artifact_id, JSON.stringify({ c: forced2.cached, a: forced2.artifact_id }))
+check('real M3: force row back to fresh fetched_at', readManifest(root, id).fetched.find((x) => x.normalized_url === normalizeUrl(base + '/target')).fetched_at === forced2.fetched_at)
+check('real M3: force kept one row per url', readManifest(root, id).fetched.filter((x) => x.normalized_url === normalizeUrl(base + '/target')).length === 1)
+
+// --- M3 real: redirect alias (/redir → /target) collapses onto the row
+const redir = await runFetch(root, realFetcher, { url: base + '/redir' })
+check('real M3: redirect miss reuses row in place', redir.cached === false && redir.artifact_id === full.artifact_id, JSON.stringify({ c: redir.cached, a: redir.artifact_id }))
+const redirHit = await runFetch(root, realFetcher, { url: base + '/redir' })
+check('real M3: redirect alias re-fetch → hit', redirHit.cached === true && redirHit.artifact_id === full.artifact_id, JSON.stringify({ c: redirHit.cached, a: redirHit.artifact_id }))
 
 console.log(fail === 0 ? 'harness A: all checks passed' : 'harness A: ' + fail + ' FAILURES')
 server.close()
@@ -289,6 +351,14 @@ if (full.artifact_id) {
 const st = await byName.mission_status.execute({ mission_id: mid, cwd: workdir }, exec())
 check('tool: visited ledger has row', st.visited.length === 1 && st.visited[0].quality === 'full', JSON.stringify(st.visited))
 
+// M3 tool-level: cache hit + force (one row per normalized URL)
+const hit = await byName.mission_fetch.execute({ url: base + '/target', mission_id: mid, cwd: workdir }, exec())
+check('tool M3: cache hit', hit.cached === true && hit.artifact_id === full.artifact_id && hit.age_days === 0 && hit.next_step_hint.startsWith('cached:'), JSON.stringify({ c: hit.cached, a: hit.artifact_id, h: hit.next_step_hint }))
+const forced = await byName.mission_fetch.execute({ url: base + '/target', force: true, mission_id: mid, cwd: workdir }, exec())
+check('tool M3: force re-fetch, same artifact', forced.cached === false && forced.age_days === 0 && forced.artifact_id === full.artifact_id, JSON.stringify({ c: forced.cached, a: forced.artifact_id }))
+const stf = await byName.mission_status.execute({ mission_id: mid, cwd: workdir }, exec())
+check('tool M3: one ledger row per url', stf.visited.length === 1, 'visited=' + stf.visited.length)
+
 const b404 = await byName.mission_fetch.execute({ url: base + '/missing', mission_id: mid, cwd: workdir }, exec())
 check('tool: 404 → blocked receipt', b404.page_quality === 'blocked' && b404.chunk_count === 0, JSON.stringify({ q: b404.page_quality, e: b404.error }))
 
@@ -297,8 +367,9 @@ check('tool: normalize_failed envelope', bad.ok === false && bad.error.startsWit
 const st2 = await byName.mission_status.execute({ mission_id: mid, cwd: workdir }, exec())
 check('tool: no ledger row for bad url', st2.visited.length === 2, 'visited=' + st2.visited.length)
 
+// /other is NOT yet stored (M3: stored URLs are cache hits, not spawns)
 process.env.BROWSER39_BIN = '/nonexistent/b39'
-const dead = await byName.mission_fetch.execute({ url: base + '/target', mission_id: mid, cwd: workdir }, exec())
+const dead = await byName.mission_fetch.execute({ url: base + '/other', mission_id: mid, cwd: workdir }, exec())
 check('tool: spawn_failed envelope', dead.ok === false && dead.error.startsWith('spawn_failed:'), JSON.stringify(dead))
 delete process.env.BROWSER39_BIN
 

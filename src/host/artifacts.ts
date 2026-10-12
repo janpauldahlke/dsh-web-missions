@@ -14,11 +14,16 @@
  * The ledger key is the normalized FINAL url (D-M2.2) — page.json records it
  * as `normalized_url`. All writes go through the store's atomic temp+rename.
  */
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { FetchedPage } from '../shared/types.ts'
 import { normalizeUrl } from './normalize.ts'
-import { atomicWriteJson, atomicWriteText, newArtifactId } from './store.ts'
+import {
+  StoreError,
+  atomicWriteJson,
+  atomicWriteText,
+  newArtifactId,
+} from './store.ts'
 
 /** Hand-set knob (ENV.md): default chunk size in characters. */
 export const DEFAULT_CHUNK_CHARS = 2000
@@ -84,6 +89,26 @@ export interface StoredArtifact {
 export interface StoreArtifactOptions {
   /** Default DEFAULT_CHUNK_CHARS (2000, hand config). */
   chunkChars?: number
+  /** M3: reuse an existing artifact id instead of minting a new one. */
+  artifactId?: string
+  /** M3: wipe the existing artifact dir contents first (force overwrite). */
+  replace?: boolean
+}
+
+/** page.json record = FetchedPage + stored metadata. */
+export interface StoredPageRecord extends FetchedPage {
+  artifact_id: string
+  mission_id: string
+  normalized_url: string
+  stored_at: string
+}
+
+export interface ReadArtifactResult {
+  page: StoredPageRecord
+  /** Deduped links as stored in links.json (absent file → []). */
+  links: Array<{ url: string; text: string }>
+  /** Chunk files on disk (0 when no chunks dir). */
+  chunkCount: number
 }
 
 /**
@@ -97,9 +122,21 @@ export function storeArtifact(
   opts: StoreArtifactOptions = {},
 ): StoredArtifact {
   const chunkChars = opts.chunkChars ?? DEFAULT_CHUNK_CHARS
-  const artifactId = newArtifactId()
+  const artifactId = opts.artifactId ?? newArtifactId()
   const dir = join(root, missionId, 'pages', artifactId)
-  mkdirSync(dir, { recursive: true })
+  if (opts.replace) {
+    // M3 force: overwrite in place — drop stale page.json/links.json/chunks
+    // so the new fetch is the sole truth (stale chunks/links never survive).
+    if (existsSync(dir)) {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) rmSync(join(dir, e.name), { recursive: true, force: true })
+        else rmSync(join(dir, e.name), { force: true })
+      }
+    }
+    mkdirSync(dir, { recursive: true })
+  } else {
+    mkdirSync(dir, { recursive: true })
+  }
 
   const storedAt = new Date().toISOString()
   const pageRecord = {
@@ -130,4 +167,42 @@ export function storeArtifact(
     previewHead: page.content.slice(0, PREVIEW_HEAD_CHARS),
     links,
   }
+}
+
+/**
+ * Read a stored artifact back (M3 hit path). page.json is required (a missing
+ * or corrupt record is a store fault, surfaced as `corrupt`); links.json and
+ * chunks/ are optional (blocked pages / link-less pages).
+ */
+export function readArtifact(root: string, missionId: string, artifactId: string): ReadArtifactResult {
+  const dir = join(root, missionId, 'pages', artifactId)
+  const pagePath = join(dir, 'page.json')
+  if (!existsSync(pagePath)) {
+    throw new StoreError('corrupt', `page.json missing for artifact ${artifactId}`)
+  }
+  let page: StoredPageRecord
+  try {
+    page = JSON.parse(readFileSync(pagePath, 'utf8')) as StoredPageRecord
+  } catch (error) {
+    throw new StoreError('corrupt', `cannot read ${pagePath}: ${(error as Error).message}`)
+  }
+
+  let links: Array<{ url: string; text: string }> = []
+  const linksPath = join(dir, 'links.json')
+  if (existsSync(linksPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(linksPath, 'utf8'))
+      if (Array.isArray(parsed)) links = parsed
+    } catch {
+      links = [] // unreadable links.json degrades to no sample links (page itself is intact)
+    }
+  }
+
+  let chunkCount = 0
+  const chunksDir = join(dir, 'chunks')
+  if (existsSync(chunksDir)) {
+    chunkCount = readdirSync(chunksDir, { withFileTypes: true }).filter((e) => e.isFile()).length
+  }
+
+  return { page, links, chunkCount }
 }
