@@ -1,13 +1,13 @@
 # M_8 smoke — phase status
 
-Phase state: **in-progress** · Updated: 2026-10-13 · Last slice: 8.1
+Phase state: **in-progress** · Updated: 2026-10-13 · Last slice: 8.2
 
 ## Slices
 
 | # | Slice | State | Verify evidence |
 | --- | --- | --- | --- |
 | 8.1 | fixtures/partner-daten.json (10 entities, freeze liveness) | green | 10 entities / 15 URLs / 11 hosts, shape asserted (bank 5 + insurer 4 + fund 1); liveness 2026-10-13: 11/15 200 via plain HTTP (browser-like UA), 4/4 bot-check hosts (comdirect ×2 401 CIF_Check, allianz ×2 403) verified 200 via browser39 = the mission transport; 0 dead. HUK-Coburg swapped → HanseMerkur (huk-coburg.de: TLS SNI "unrecognized name", unreachable plain + browser from this network). Re-verify: `node scripts/check-fixture-liveness.mjs` (exit 0) |
-| 8.2 | allowlist.txt = fixture hosts | todo | — |
+| 8.2 | allowlist.txt = fixture hosts | green | `.dsh/allowlist.txt` = exactly the 11 fixture hosts (`*.suffix` lines, admits apex+www+subdomains), replaces the M5 dogfood `127.0.0.1` line; gitignored (board-only commit). Verified with the REAL gate: `node scripts/run-ts-check.mjs scripts/check-m8-allowlist.ts` → 46/46 (11 patterns parsed; all 15 fixture URLs + all apex/sub forms admitted; 8 non-fixture lookalikes denied incl. retired 127.0.0.1, fixturehost.example, notallianz.de, allianz.dev, allianz.de.evil.example, ftp://). `loadAllowlist` re-reads per call → live :3090 picks it up without restart. End-to-end de-risk `node scripts/probe-real-fetch.mjs` (isolated temp cwd, same allowlist) → real browser39 fetch of dkb.de admitted (quality full, artifact p-…, 1 budget), duckduckgo.com refused pre-spawn (allowlist_denied, 0 budget, no visited row). Regression: 13/13 smoke + build clean |
 | 8.3 | run S1 (Kurzprofile) mission on :3090 | todo | — |
 | 8.4 | A1–A6 assertions + accept-cache.mjs zero-spawn proof | todo | — |
 | 8.5 | S2 news dig + S3 chart snapshot (secondary) | todo | — |
@@ -17,3 +17,4 @@ Phase state: **in-progress** · Updated: 2026-10-13 · Last slice: 8.1
 
 - 2026-10-12 phase file frozen. Open item 1 (fixtures) frozen here. DoD = PLAN §12. Sub-decisions D-M8.1–D-M8.5.
 - 2026-10-13 8.1 green — `fixtures/partner-daten.json` frozen: candidate list realized with liveness corrections: sparda-berlin.de home kept (redirects to sparda-b.de rebrand) + Kontomodelle as secondary (no privatkunden path); DKB secondary = /privatkunden/girokonto (no top-level konditionen path, 404); ING-DiBa kept (→ ing.de rebrand, /zinsen/ → Zinsspiegel); comdirect + allianz pass the bot check only through a real browser → verified via browser39; allianz secondary = Private-Haftpflicht page (/private.html is 404); HUK-Coburg swapped for HanseMerkur (TLS SNI block from this network, plan allows swaps). `scripts/check-fixture-liveness.mjs` added (plain-HTTP first pass; 401/403 classified BOT = verify via browser39; exit ≠0 only on real failures). Allowlist hosts for 8.2: allianz.de, comdirect.de, dbv.de, dkb.de, erv.de, hansemerkur.de, ing-diba.de, sparda-b.de, sparda-berlin.de, sparkasse.de, union-investment.de (+ www. forms).
+- 2026-10-13 8.2 green — `.dsh/allowlist.txt` set to exactly the 11 fixture hosts (`*.suffix` form; replaces the M5 dogfood `127.0.0.1` line). The gate is file-driven and `loadAllowlist` re-reads per call, so the live :3090 server reflects it with no restart. Two verification layers added: (a) `scripts/check-m8-allowlist.ts` (run via the new `scripts/run-ts-check.mjs` esbuild harness, since the tree is esbuild-only with extensionless TS imports) runs the REAL `parseAllowlist`/`isAllowed` over the real file + real fixture → 46/46 (all fixture URLs + apex/sub forms admitted; 8 lookalikes denied); (b) `scripts/probe-real-fetch.mjs` runs the built lib's tools in-process against an isolated temp cwd (never the live store, so the operator's M6 V8 fixtures stay clean) with the same allowlist → real browser39 fetch of dkb.de admitted (quality full, 1 budget) + duckduckgo.com refused pre-spawn (0 budget, no visited row). Full regression 13/13 smoke + build clean.
