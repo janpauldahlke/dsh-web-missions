@@ -1,0 +1,100 @@
+{
+  "$schema": "partner-daten fixture set v1 — M8 8.1 (open item 1, frozen)",
+  "frozen": "2026-10-13",
+  "shape": "10 entities, German market, bank + insurer mix, 1–2 URLs each (D-M8.1)",
+  "note": "Every URL is a mission seed (depth 0, host-exempt); the M5 depth fence stays inactive by construction (plan/M_8_smoke.md). The smoke allowlist = exactly the hosts below (+ www. forms) in .dsh/allowlist.txt. This list also doubles as the offline discovery surface (M7). Liveness verified 2026-10-13: via browser39 (the mission transport) where noted, otherwise plain HTTP with browser-like headers. Re-verify: node scripts/check-fixture-liveness.mjs",
+  "entities": [
+    {
+      "id": "sparda-bank-berlin",
+      "name": "Sparda-Bank Berlin",
+      "type": "bank",
+      "urls": [
+        "https://www.sparda-berlin.de/",
+        "https://www.sparda-b.de/bankangebote_leistungen/unsere_konten.html"
+      ],
+      "notes": "home redirects to sparda-b.de/homepage.html (rebrand); site has no 'privatkunden' path — secondary is Kontomodelle (verified 2026-10-13 via browser39)"
+    },
+    {
+      "id": "dkb",
+      "name": "DKB (Deutsche Kreditbank)",
+      "type": "bank",
+      "urls": [
+        "https://www.dkb.de/",
+        "https://www.dkb.de/privatkunden/girokonto"
+      ],
+      "notes": "no top-level 'konditionen' path (404) — secondary is the Girokonto page (konditionen live there)"
+    },
+    {
+      "id": "ing-diba",
+      "name": "ING-DiBa",
+      "type": "bank",
+      "urls": [
+        "https://www.ing-diba.de/",
+        "https://www.ing-diba.de/zinsen/"
+      ],
+      "notes": "ing-diba.de redirects to ing.de (rebrand); /zinsen/ resolves to the Zinsspiegel/Tagesgeld page"
+    },
+    {
+      "id": "comdirect",
+      "name": "comdirect",
+      "type": "bank",
+      "urls": [
+        "https://www.comdirect.de/",
+        "https://www.comdirect.de/konto/"
+      ],
+      "notes": "bot check (CIF_Check) on plain HTTP clients — verified 2026-10-13 via browser39 (the mission transport), status 200"
+    },
+    {
+      "id": "sparkasse-berlin",
+      "name": "Sparkasse (fz. Berlin)",
+      "type": "bank",
+      "urls": [
+        "https://www.sparkasse.de/"
+      ]
+    },
+    {
+      "id": "allianz",
+      "name": "Allianz",
+      "type": "insurer",
+      "urls": [
+        "https://www.allianz.de/",
+        "https://www.allianz.de/recht-und-eigentum/privat-haftpflichtversicherung/"
+      ],
+      "notes": "bot check on plain HTTP clients (403) — verified 2026-10-13 via browser39 (the mission transport); /private.html is 404, secondary is the flagship Private-Haftpflicht page"
+    },
+    {
+      "id": "dbv",
+      "name": "DBV (Deutscher Ring / DBV Versicherung)",
+      "type": "insurer",
+      "urls": [
+        "https://www.dbv.de/"
+      ]
+    },
+    {
+      "id": "erv",
+      "name": "ERV (Ergo Reiseversicherung)",
+      "type": "insurer",
+      "urls": [
+        "https://www.erv.de/"
+      ],
+      "notes": "redirects to ergo-reiseversicherung.de (ERV brand runs in the ERGO group)"
+    },
+    {
+      "id": "hansemerkur",
+      "name": "HanseMerkur",
+      "type": "insurer",
+      "urls": [
+        "https://www.hansemerkur.de/"
+      ],
+      "notes": "swapped in for HUK-Coburg at implementation (allowed by the plan): huk-coburg.de is unreachable from this network — TLS SNI 'unrecognized name' on both plain TLS and browser39"
+    },
+    {
+      "id": "union-investment",
+      "name": "Union Investment",
+      "type": "fund",
+      "urls": [
+        "https://www.union-investment.de/"
+      ]
+    }
+  ]
+}
