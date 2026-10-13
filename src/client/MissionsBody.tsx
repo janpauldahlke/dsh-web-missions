@@ -17,10 +17,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import {
+  CLEAR_ALL_ROUTE,
   MISSIONS_ID_PREFIX,
   MISSIONS_ROUTE,
+  RECENTS_CLEAR_ROUTE,
+  type ClearAllPayload,
   type ListPayload,
   type MissionSummaryPayload,
+  type RecentsClearedPayload,
   type StatusPayload,
   type StopPayload,
 } from '../shared/types.ts'
@@ -108,6 +112,69 @@ export function MissionsBody(): ReactNode {
     }
   }, [view, stopping, sync])
 
+  // --- M6 6.3: hygiene actions -------------------------------------------
+  const [clearNote, setClearNote] = useState<string | null>(null)
+  const [clearArmed, setClearArmed] = useState(false)
+  const clearArmedTimer = useRef<number | null>(null)
+
+  const disarmClear = useCallback(() => {
+    setClearArmed(false)
+    if (clearArmedTimer.current !== null) {
+      window.clearTimeout(clearArmedTimer.current)
+      clearArmedTimer.current = null
+    }
+  }, [])
+
+  useEffect(() => () => disarmClear(), [disarmClear])
+
+  /** Clear recents: confirm() → POST /recents/clear (keeps mission dirs). */
+  const clearRecentsAction = useCallback(async () => {
+    if (typeof window !== 'undefined' &&
+        !window.confirm('Clear the recent-missions list? (mission data on disk is kept)')) return
+    try {
+      const data = (await fetchJson(RECENTS_CLEAR_ROUTE, { method: 'POST' })) as RecentsClearedPayload
+      if (data.ok) {
+        setClearNote(`recents cleared — ${data.cleared} row(s) removed, mission data kept`)
+      } else {
+        setClearNote('clear recents: no response from host')
+      }
+      await sync()
+    } catch (error) {
+      setClearNote('clear recents failed: ' + (error instanceof Error ? error.message : String(error)))
+    }
+  }, [sync])
+
+  /**
+   * Clear all: DOUBLE confirm (D-M6.2) — first click arms (6 s window),
+   * second click executes POST /clear-all {confirm:true}. It touches
+   * ~/.dsh/browser39/sessions, so no single accidental click wipes it.
+   */
+  const clearAllAction = useCallback(async () => {
+    if (!clearArmed) {
+      setClearArmed(true)
+      if (clearArmedTimer.current !== null) window.clearTimeout(clearArmedTimer.current)
+      clearArmedTimer.current = window.setTimeout(() => setClearArmed(false), 6000)
+      return
+    }
+    disarmClear()
+    try {
+      const data = (await fetchJson(CLEAR_ALL_ROUTE, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ confirm: true }),
+      })) as ClearAllPayload
+      if (data.ok) {
+        setClearNote(`cleared all — ${data.missions} mission(s), ${data.index_rows} index row(s), ${data.session_hosts} session host(s)`)
+        setView({ kind: 'board' })
+      } else {
+        setClearNote('clear all: no response from host')
+      }
+      await sync()
+    } catch (error) {
+      setClearNote('clear all failed: ' + (error instanceof Error ? error.message : String(error)))
+    }
+  }, [clearArmed, disarmClear, sync])
+
   const hint = view.kind === 'detail' && detail ? sessionHint(detail.visited) : null
 
   return (
@@ -122,7 +189,17 @@ export function MissionsBody(): ReactNode {
       </p>
 
       {view.kind === 'board' ? (
-        <Board list={list} onOpen={(id) => void openDetail(id)} />
+        <div>
+          <Board list={list} onOpen={(id) => void openDetail(id)} />
+          {list !== null && (
+            <Hygiene
+              clearNote={clearNote}
+              clearArmed={clearArmed}
+              onClearRecents={() => void clearRecentsAction()}
+              onClearAll={() => void clearAllAction()}
+            />
+          )}
+        </div>
       ) : (
         <Detail
           missionId={view.missionId}
@@ -138,7 +215,8 @@ export function MissionsBody(): ReactNode {
   )
 }
 
-function Board({ list, onOpen }: { list: ListPayload | null; onOpen: (id: string) => void }): ReactNode {
+/** Presentational board (exported for the render smoke; no hooks). */
+export function Board({ list, onOpen }: { list: ListPayload | null; onOpen: (id: string) => void }): ReactNode {
   if (list === null) return <p style={styles.empty}>loading…</p>
   if (list.active.length === 0 && list.recents.length === 0) {
     return <p style={styles.empty}>no missions yet — start one from chat (mission_start)</p>
@@ -209,7 +287,40 @@ function Row({ children, onClick }: { children: ReactNode; onClick: () => void }
   )
 }
 
-function Detail({
+/**
+ * Hygiene section (M6 6.3): Clear recents (confirm) + Clear all (double
+ * confirm — D-M6.2). Presentational (no hooks; exported for the render
+ * smoke) — the arm/execute state machine lives in MissionsBody.
+ */
+export function Hygiene({
+  clearNote,
+  clearArmed,
+  onClearRecents,
+  onClearAll,
+}: {
+  clearNote: string | null
+  clearArmed: boolean
+  onClearRecents: () => void
+  onClearAll: () => void
+}): ReactNode {
+  return (
+    <div style={styles.hygiene}>
+      <button style={styles.hygieneButton} onClick={onClearRecents}>
+        clear recents
+      </button>
+      <button
+        style={clearArmed ? styles.hygieneButtonArmed : styles.hygieneButtonDanger}
+        onClick={onClearAll}
+      >
+        {clearArmed ? 'click again to clear ALL (~/.dsh sessions too)' : 'clear all'}
+      </button>
+      {clearNote && <p style={styles.hygieneNote}>{clearNote}</p>}
+    </div>
+  )
+}
+
+/** Presentational detail (exported for the render smoke; no hooks). */
+export function Detail({
   missionId,
   detail,
   error,
@@ -355,6 +466,44 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'pointer',
     fontSize: 12.5,
   },
+  hygiene: {
+    marginTop: 12,
+    paddingTop: 10,
+    borderTop: '1px solid rgba(128,128,128,0.15)',
+    display: 'flex',
+    gap: 8,
+    flexWrap: 'wrap',
+    alignItems: 'center',
+  },
+  hygieneButton: {
+    padding: '3px 10px',
+    borderRadius: 6,
+    border: '1px solid rgba(128,128,128,0.3)',
+    background: 'transparent',
+    color: 'inherit',
+    cursor: 'pointer',
+    fontSize: 12,
+  },
+  hygieneButtonDanger: {
+    padding: '3px 10px',
+    borderRadius: 6,
+    border: '1px solid rgba(185,28,28,0.35)',
+    background: 'transparent',
+    color: '#991b1b',
+    cursor: 'pointer',
+    fontSize: 12,
+  },
+  hygieneButtonArmed: {
+    padding: '3px 10px',
+    borderRadius: 6,
+    border: '1px solid #b91c1c',
+    background: '#fee2e2',
+    color: '#991b1b',
+    fontWeight: 600,
+    cursor: 'pointer',
+    fontSize: 12,
+  },
+  hygieneNote: { margin: 0, width: '100%', fontSize: 11.5, opacity: 0.8 },
   visitedList: { marginTop: 6 },
   visitedRow: {
     display: 'flex',

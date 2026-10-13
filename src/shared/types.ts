@@ -93,6 +93,19 @@ export interface StopPayload {
   updated_at: string
 }
 
+/** M6 6.3 — hygiene action responses. */
+export interface RecentsClearedPayload {
+  ok: boolean
+  cleared: number
+}
+
+export interface ClearAllPayload {
+  ok: boolean
+  missions: number
+  index_rows: number
+  session_hosts: number
+}
+
 /** One-shot health payload the client pane renders (host ↔ UI loop proof). */
 export interface HealthPayload {
   ok: boolean
