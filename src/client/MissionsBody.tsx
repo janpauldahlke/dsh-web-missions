@@ -7,9 +7,12 @@
  *   mark, age, artifact id), budget line, stop button (POST …/:id/stop),
  *   and the cookie/session hint line when the thin+attempted-not-improved
  *   condition holds.
- * - Data: only the M1–M5 host routes (GET /missions, GET /missions/:id,
- *   POST /missions/:id/stop). Initial load + refetch after actions; the
- *   15 s visible-tab polling arrives with M6 6.4 (D-M6.1).
+ * - Data: only the M1–M6 host routes (GET /missions, GET /missions/:id,
+ *   POST /missions/:id/stop, POST /recents/clear, POST /clear-all).
+ *   Initial load + refetch after actions; the board re-syncs every 15 s
+ *   while the pane is mounted and the browser tab is visible (M6 6.4,
+ *   D-M6.1) — the poller is disposed on unmount (no orphan timers, no
+ *   global timers).
  *
  * Inline styles only (no CSS pipeline). Runtime imports: react (+jsx-runtime)
  * and the local modules — the platform baseline for the CJS bundle.
@@ -37,6 +40,7 @@ import {
   sessionHint,
   shortArtifact,
 } from './paneModel.ts'
+import { POLL_INTERVAL_MS, createPoller } from './pollModel.ts'
 
 type View = { kind: 'board' } | { kind: 'detail'; missionId: string }
 
@@ -68,6 +72,26 @@ export function MissionsBody(): ReactNode {
 
   useEffect(() => {
     void sync()
+  }, [sync])
+
+  // --- M6 6.4: 15 s visible-tab polling (D-M6.1) --------------------------------
+  // The pane body is mounted only while its tab is visible (the tab type
+  // registers without `keepMounted`, so the shell unmounts it otherwise),
+  // which makes a component-scoped interval exactly "visible-tab only" with
+  // no global timer. The browser-tab gate (document.hidden) skips hidden
+  // ticks and refreshes once when the tab becomes visible again. Unmount
+  // (tab switch/close or plugin unload via ctx.effect) disposes the poller.
+  useEffect(() => {
+    const poller = createPoller({
+      sync: () => { void sync() },
+      intervalMs: POLL_INTERVAL_MS,
+      isHidden: () => (typeof document !== 'undefined' ? document.hidden : false),
+      setInterval: (fn, ms) => window.setInterval(fn, ms),
+      clearInterval: (id) => window.clearInterval(id),
+      onVisibilityChange: (fn) => document.addEventListener('visibilitychange', fn),
+      offVisibilityChange: (fn) => document.removeEventListener('visibilitychange', fn),
+    })
+    return () => poller.dispose()
   }, [sync])
 
   const detailToken = useRef(0)

@@ -1,8 +1,12 @@
-// M6 pane smoke (6.2 + 6.3) — the pane's display logic and rendering, pure
+// M6 pane smoke (6.2 + 6.3 + 6.4) — the pane's logic and rendering, pure
 // and DOM-free:
 //   Part A: paneModel.ts (quality badge colors, age, the cookie/session hint
 //     V6 matrix, budget line, artifact shortening), bundled via esbuild into
 //     a temp ESM file and unit-checked.
+//   Part A′: pollModel.ts (M6 6.4, D-M6.1: 15 s visible-tab polling policy —
+//     tick cadence, document.hidden gate, visibility resume, dispose tears
+//     down interval + listener, idempotent) against a fake environment, plus
+//     source-level wiring checks in MissionsBody.tsx.
 //   Part B: the presentational Board / Detail / Hygiene components SSR'd via
 //     react-dom/server against fixture payloads (the mechanical half of
 //     V1/V2/V4/V5/V6: sections, badges, budget line, hint line, clear
@@ -94,6 +98,76 @@ check('hint: non-http url row skipped, later row used', m.sessionHint([
   row({ quality: 'thin', consent_attempted: true, url: 'garbage' }),
   row({ quality: 'thin', consent_attempted: true, url: 'https://ok.example/' }),
 ]) === 'session thin on ok.example — export cookies or preload into ~/.dsh/browser39/sessions/ok.example/')
+
+// --- polling (M6 6.4, D-M6.1: 15 s visible-tab only, disposed on unload) -------------
+const outP = join(T, 'pollModel.mjs')
+await build({
+  entryPoints: [join(root, 'src', 'client', 'pollModel.ts')],
+  bundle: true,
+  format: 'esm',
+  platform: 'node',
+  target: 'es2024',
+  outfile: outP,
+})
+const P = await import(outP)
+
+check('poll: cadence constant is 15 s', P.POLL_INTERVAL_MS === 15000, String(P.POLL_INTERVAL_MS))
+
+/** A fake environment: one timer slot + one visibility listener + counters. */
+function makeEnv() {
+  const env = { syncs: 0, hidden: false, timer: null, listener: null, cleared: 0, removed: 0 }
+  return {
+    env,
+    deps: {
+      sync: () => { env.syncs++ },
+      intervalMs: P.POLL_INTERVAL_MS,
+      isHidden: () => env.hidden,
+      setInterval: (fn, ms) => { env.timer = { fn, ms, cleared: false }; return 1 },
+      clearInterval: () => { if (env.timer) { env.timer.cleared = true; env.cleared++ } },
+      onVisibilityChange: (fn) => { env.listener = fn },
+      offVisibilityChange: (fn) => { if (env.listener === fn) { env.listener = null; env.removed++ } },
+    },
+    /** Fire one interval tick (no-op once cleared). */
+    tick: () => { if (env.timer && !env.timer.cleared) env.timer.fn() },
+    /** Fire the visibilitychange listener (no-op once removed). */
+    visibility: () => { if (env.listener) env.listener() },
+  }
+}
+
+{
+  const h = makeEnv()
+  const poller = P.createPoller(h.deps)
+  check('poll: created at 15000 ms interval', h.env.timer !== null && h.env.timer.ms === 15000, String(h.env.timer && h.env.timer.ms))
+  check('poll: no sync before first tick', h.env.syncs === 0, String(h.env.syncs))
+  h.tick(); h.tick(); h.tick()
+  check('poll: visible tab → sync each tick', h.env.syncs === 3, String(h.env.syncs))
+  h.env.hidden = true
+  h.tick(); h.tick()
+  check('poll: hidden browser tab → ticks skipped', h.env.syncs === 3, String(h.env.syncs))
+  h.env.hidden = false
+  h.visibility()
+  check('poll: back to visible → immediate one-off refresh', h.env.syncs === 4, String(h.env.syncs))
+  h.env.hidden = true
+  h.visibility()
+  check('poll: hidden transition → no sync', h.env.syncs === 4, String(h.env.syncs))
+  poller.dispose()
+  check('poll: dispose clears the interval', h.env.cleared === 1, String(h.env.cleared))
+  check('poll: dispose removes the visibility listener', h.env.removed === 1, String(h.env.removed))
+  h.tick(); h.visibility()
+  check('poll: no orphan activity after dispose', h.env.syncs === 4, String(h.env.syncs))
+  poller.dispose()
+  check('poll: dispose is idempotent', h.env.cleared === 1 && h.env.removed === 1, `${h.env.cleared}/${h.env.removed}`)
+}
+
+// The component must bind the real environment (window timers + the DOM
+// visibilitychange event) — source-level wiring check (the browser half of
+// V7 is the operator's HMR/hard-refresh pass in 6.5).
+import { readFileSync } from 'node:fs'
+const bodySrc = readFileSync(join(root, 'src', 'client', 'MissionsBody.tsx'), 'utf8')
+check('wiring: MissionsBody uses createPoller at POLL_INTERVAL_MS',
+  bodySrc.includes('createPoller') && bodySrc.includes('POLL_INTERVAL_MS') && bodySrc.includes('poller.dispose'))
+check('wiring: visibilitychange + window timers bound, effect cleanup returns dispose',
+  bodySrc.includes("addEventListener('visibilitychange'") && bodySrc.includes('window.setInterval') && bodySrc.includes('return () => poller.dispose()'))
 
 // --- render checks (V1/V2/V6 mechanical half) --------------------------------------
 // SSR the presentational Board/Detail via react-dom/server against fixture
