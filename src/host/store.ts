@@ -22,14 +22,63 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import { DEFAULT_FETCH_BUDGET, readConfig } from './config.ts'
 
-export const DEFAULT_FETCH_BUDGET = 10
+export { DEFAULT_FETCH_BUDGET }
 export const RECENTS_CAP = 50
 
 export type MissionStatus = 'active' | 'stopped' | 'done'
 
+/**
+ * Mission budget (C6, S5 — unit = fetch calls, live in M5). `max` is set at
+ * start; `spent` is incremented on every CHARGED attempt (non-cached fetch
+ * attempt — success, failure, or timeout; cache hits are free unless
+ * `cacheHitCountsAsBudget` is on). `spent` is optional: M1-era manifests
+ * predate it (read as 0). `remaining = max - spent` is always derived, never
+ * stored.
+ */
 export interface MissionBudget {
   max: number
+  spent?: number
+}
+
+/** View over a budget with the derived `remaining` (C4 receipt / status). */
+export interface BudgetView {
+  max: number
+  spent: number
+  remaining: number
+  unit: 'fetch_calls'
+}
+
+export function budgetSpent(budget: MissionBudget): number {
+  return budget.spent ?? 0
+}
+
+export function budgetRemaining(budget: MissionBudget): number {
+  return budget.max - budgetSpent(budget)
+}
+
+export function budgetView(budget: MissionBudget): BudgetView {
+  return { max: budget.max, spent: budgetSpent(budget), remaining: budgetRemaining(budget), unit: 'fetch_calls' }
+}
+
+/** True when no further charged attempt is allowed (remaining would go < 0). */
+export function budgetExhausted(budget: MissionBudget): boolean {
+  return budgetSpent(budget) >= budget.max
+}
+
+/**
+ * Persist `budget.spent += 1` (C6: a charged fetch CALL, i.e. a browser
+ * spawn — success, failure, or timeout). Called just before the spawn
+ * attempt so a failed/timeout fetch still costs its call.
+ */
+export function chargeBudget(root: string, missionId: string): Manifest {
+  const manifest = readManifest(root, missionId)
+  if (!manifest) throw new StoreError('unknown_mission', `no such mission: ${missionId}`)
+  manifest.budget.spent = budgetSpent(manifest.budget) + 1
+  manifest.updated_at = new Date().toISOString()
+  writeManifest(root, manifest)
+  return manifest
 }
 
 /** Visited ledger row (D11) — written by M2+; shape frozen now. */
@@ -40,6 +89,13 @@ export interface FetchedRow {
   quality: string
   fetched_at: string
   consent_improved?: boolean
+  /**
+   * M5 (C6 audit): the attempt that wrote/refreshed this row was charged
+   * against the mission budget. In v0 every row is written by a charged
+   * (non-cached) attempt, so this is true; the field makes the audit
+   * explicit for row writers that may not charge (M7+).
+   */
+  budget_charged?: boolean
   /**
    * M3 (D-M2.2 extension): normalized forms of the URLs that were requested
    * when this row was written/updated (ordered, deduped). Lets a redirecting
@@ -90,7 +146,9 @@ export interface ListResult {
   recents: MissionSummary[]
 }
 
-export interface StatusResult extends Manifest {
+export interface StatusResult extends Omit<Manifest, 'budget'> {
+  /** C6: the manifest budget with the derived `remaining` (every status shows it). */
+  budget: BudgetView
   visited: FetchedRow[]
 }
 
@@ -217,7 +275,13 @@ function appendStopFooter(root: string, id: string, reason: string | undefined):
 export function startMission(root: string, opts: StartOptions): Manifest {
   const note = opts.note?.trim()
   if (!note) throw new StoreError('note_required', 'mission note is required')
-  const budget = opts.budget ?? DEFAULT_FETCH_BUDGET
+  // C6 (M5): default budget comes from the config knob `defaultFetchBudget`
+  // (config.json under the mission root); the explicit `budget` arg wins.
+  const defaultBudget = readConfig(root).defaultFetchBudget
+  if (defaultBudget <= 0 || !Number.isFinite(defaultBudget)) {
+    throw new StoreError('bad_config', `defaultFetchBudget must be a positive number: ${String(defaultBudget)}`)
+  }
+  const budget = opts.budget ?? defaultBudget
   if (!Number.isFinite(budget) || budget <= 0) {
     throw new StoreError('bad_budget', `budget must be a positive number: ${String(opts.budget)}`)
   }
@@ -344,5 +408,5 @@ export function missionStatus(root: string, id?: string): StatusResult {
   const resolved = resolveMissionId(root, id)
   const manifest = readManifest(root, resolved)
   if (!manifest) throw new StoreError('unknown_mission', `no such mission: ${resolved}`)
-  return { ...manifest, visited: manifest.fetched }
+  return { ...manifest, budget: budgetView(manifest.budget), visited: manifest.fetched }
 }

@@ -15,19 +15,35 @@
  *                     (soft gate, D-M3.3: ≥1 stored page on the host)
  * - age is information, not a gate (D-M3.1): no expiry in v0
  *
+ * M5 (C6 budget, S5):
+ * - unit = fetch calls: a NON-CACHED attempt costs 1 (success, failure, or
+ *   timeout — it was a browser spawn). The charge is persisted BEFORE the
+ *   spawn, so a failed attempt still costs its call.
+ * - cache hits are free (`cacheHitCountsAsBudget: false`, default; the knob
+ *   comes from config.json and can be overridden per call).
+ * - `budget.spent >= budget.max` → `budget_exhausted` (hard stop, D-M5.2: no
+ *   override — a new `mission_start` continues; `force` does not bypass).
+ * - every receipt carries `budget: { max, spent, remaining, unit }`.
+ * - ledger rows written by a charged attempt carry `budget_charged: true`.
+ *
  * Errors propagate as StoreError / FetchError; the tool layer renders
  * `{ ok: false, error: '<code>: <msg>' }`.
  */
 import type { FetchedPage, PageFetcher } from '../shared/types.ts'
 import { PREVIEW_HEAD_CHARS, readArtifact, storeArtifact, type StoredArtifact } from './artifacts.ts'
+import { readConfig } from './config.ts'
 import { normalizeUrl } from './normalize.ts'
 import { FetchError } from './fetcher.ts'
 import {
   StoreError,
   appendFetchedRow,
+  budgetExhausted,
+  budgetView,
+  chargeBudget,
   readManifest,
   resolveMissionId,
   updateFetchedRow,
+  type BudgetView,
   type FetchedRow,
   type Manifest,
 } from './store.ts'
@@ -52,6 +68,11 @@ export interface FetchReceipt {
   preview_head: string
   depth: 0
   parent_artifact_id: null
+  /**
+   * C6 (M5, S5): the mission budget after this attempt — every receipt
+   * carries it (unit = fetch calls).
+   */
+  budget: BudgetView
   visited_count: number
   next_step_hint: string
   sample_links: string[]
@@ -118,6 +139,11 @@ export interface RunFetchArgs {
 export interface RunFetchOptions {
   /** Injectable clock (M3 V4: age_days arithmetic); default Date.now. */
   now?: () => number
+  /**
+   * C6: charge cache hits against the budget. Unset → config.json
+   * `cacheHitCountsAsBudget` (default false = hits free).
+   */
+  cacheHitCountsAsBudget?: boolean
 }
 
 export async function runFetch(
@@ -127,6 +153,8 @@ export async function runFetch(
   opts: RunFetchOptions = {},
 ): Promise<FetchReceipt> {
   const now = opts.now ?? Date.now
+  const config = readConfig(root)
+  const hitsCost = opts.cacheHitCountsAsBudget ?? config.cacheHitCountsAsBudget
 
   // 1. resolve mission (D-M1.4 default rule; explicit id wins)
   const url = args.url?.trim()
@@ -135,20 +163,38 @@ export async function runFetch(
 
   // 2. normalize BEFORE any spawn (V3: unparsable → normalize_failed, zero batch)
   const requestedKey = normalizeUrl(url)
-  const manifest = readManifest(root, missionId)
+  let manifest = readManifest(root, missionId)
   if (!manifest) throw new StoreError('unknown_mission', `no such mission: ${missionId}`)
 
   // 3. M3 hit path — no spawn (V1/V2/V5/V6)
   const hit = findLedgerRow(manifest, requestedKey)
   const force = args.force === true
-  if (hit && !force) {
+  const hitFree = hit && !force
+
+  // 4. C6 budget gate (M5): this attempt is CHARGED when it spawns (always)
+  //    or when hits cost (knob on). Exhausted → hard stop BEFORE any spawn
+  //    (D-M5.2: no override; a new mission_start continues).
+  const willCharge = !hitFree || hitsCost
+  if (willCharge && budgetExhausted(manifest.budget)) {
+    throw new StoreError(
+      'budget_exhausted',
+      `${manifest.budget.max} fetch calls used; budget exhausted — start a new mission to continue (no override in v0)`,
+    )
+  }
+  if (willCharge) {
+    // Persist the charge BEFORE the spawn: a failed/timeout fetch still costs
+    // its call (it was a browser spawn).
+    manifest = chargeBudget(root, missionId)
+  }
+
+  if (hitFree) {
     return buildHitReceipt(root, missionId, url, manifest, hit, now())
   }
 
-  // 4. fetch (timeout / spawn failures surface as FetchError fetch_failed / spawn_failed)
+  // 5. fetch (timeout / spawn failures surface as FetchError fetch_failed / spawn_failed)
   const page = await fetcher.fetch(url, { sessionKey: hostSessionKey(url) })
 
-  // 5. ledger target (D-M3.2: one row per normalized URL per mission)
+  // 6. ledger target (D-M3.2: one row per normalized URL per mission)
   //    - a row already exists for the FINAL key (redirect-collapse onto a
   //      stored page) → update it in place;
   //    - force on a hit whose final key moved → update the hit row in place;
@@ -172,12 +218,15 @@ export async function runFetch(
     fetched_at: page.fetchedAt,
     consent_improved: page.consentImproved,
     requested_keys: requestedKeys,
+    // C6 audit: a ledger row is only ever written by a charged (non-cached)
+    // attempt in v0 — the field makes that explicit.
+    budget_charged: true,
   }
   const updated = target
     ? updateFetchedRow(root, missionId, target.normalized_url, row)
     : appendFetchedRow(root, missionId, row)
 
-  // 6. M3 soft gate (D-M3.3): same-host stored pages, excluding the row this
+  // 7. M3 soft gate (D-M3.3): same-host stored pages, excluding the row this
   //    fetch just wrote/updated (a first-ever page on the host gets no hint).
   const others = manifest.fetched.filter((r) => r !== target)
   const sameHost = others.filter((r) => {
@@ -192,7 +241,7 @@ export async function runFetch(
       ? `this host has ${sameHost} stored pages — consider mission_find before fetching a new path`
       : undefined
 
-  // 7. C4 receipt (fresh: cached:false, age_days:0)
+  // 8. C4 receipt (fresh: cached:false, age_days:0; C6 budget after the charge)
   return {
     mission_id: missionId,
     artifact_id: stored.artifactId,
@@ -209,6 +258,7 @@ export async function runFetch(
     preview_head: stored.previewHead,
     depth: 0,
     parent_artifact_id: null,
+    budget: budgetView(manifest.budget),
     visited_count: updated.fetched.length,
     next_step_hint: nextStepHint(page.quality),
     sample_links: stored.links.slice(0, 5).map((l) => l.url),
@@ -243,6 +293,7 @@ function buildHitReceipt(
     preview_head: (stored.page.content ?? '').slice(0, PREVIEW_HEAD_CHARS),
     depth: 0,
     parent_artifact_id: null,
+    budget: budgetView(manifest.budget),
     visited_count: manifest.fetched.length,
     next_step_hint: cachedNextStepHint(stored.page.quality, age),
     sample_links: stored.links.slice(0, 5).map((l) => l.url),

@@ -25,6 +25,7 @@ import {
   resolveMissionId,
 } from './store.ts'
 import { Browser39Fetcher, FetchError } from './fetcher.ts'
+import { readConfig } from './config.ts'
 import { runFetch } from './fetch-service.ts'
 import { LexicalEngine, FindError } from './retrieval.ts'
 import { runFind } from './find-service.ts'
@@ -90,7 +91,7 @@ export function registerMissionTools(ctx: Context): () => void {
       properties: {
         note: { type: 'string', description: 'Short mission note/title (required).' },
         template_id: { type: 'string', description: 'Optional research template id.' },
-        budget: { type: 'integer', description: 'Max fetch calls (default 10; live enforcement from M5).' },
+        budget: { type: 'integer', description: 'Max fetch calls (default: config knob defaultFetchBudget, 10). Each non-cached fetch attempt costs 1 call.' },
         cwd: CWD_PARAM,
       },
     },
@@ -217,7 +218,10 @@ export function registerMissionTools(ctx: Context): () => void {
       'receipts carry page_quality (full | thin | blocked), chunk_count, ' +
       'preview_head, sample_links (≤5), and a deterministic next_step_hint; ' +
       'same-host misses add hint_find_first. Blocked pages (4xx/5xx, empty) ' +
-      'are stored too, so dead URLs are known, not guessed.',
+      'are stored too, so dead URLs are known, not guessed. Every receipt ' +
+      'carries budget { max, spent, remaining, unit: fetch_calls }: each ' +
+      'non-cached fetch attempt costs 1 call (cache hits are free), and an ' +
+      'exhausted mission fails with budget_exhausted (start a new mission).',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -251,6 +255,7 @@ export function registerMissionTools(ctx: Context): () => void {
           preview_head: { type: 'string' },
           depth: { type: 'integer' },
           parent_artifact_id: { type: ['string', 'null'] },
+          budget: { type: 'object' },
           visited_count: { type: 'integer' },
           next_step_hint: { type: 'string' },
           sample_links: { type: 'array' },
@@ -262,10 +267,15 @@ export function registerMissionTools(ctx: Context): () => void {
     async execute(args: ToolArgs, exec: ExecLike) {
       try {
         const root = missionRoot(resolveCwd(args, exec))
-        return await runFetch(root, new Browser39Fetcher(), {
+        const config = readConfig(root)
+        return await runFetch(root, new Browser39Fetcher({
+          fetchTimeoutMs: config.fetchTimeoutMs,
+          thinThresholdChars: config.thinThresholdChars,
+        }), {
           url: args.url,
           mission_id: args.mission_id,
           force: args.force,
+          chunkChars: args.chunkChars ?? config.chunkChars,
         })
       } catch (error) {
         return toolErrorResult(error)

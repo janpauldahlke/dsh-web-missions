@@ -1,6 +1,6 @@
 # M_5 — ledger (budget + allowlist + sessions/consent v0)
 
-Phase: **M5** · Status: not started (see `M_5_ledger.status.md`)
+Phase: **M5** · Status: in flight — 5.1 done (see `M_5_ledger.status.md`)
 Depends on: M2 (fetch path), M3 (cache-hit receipts), M4 (skill honesty
   contract to enforce).
 
@@ -137,7 +137,11 @@ budget/allowlist, the agent cannot silently exceed it:
 | `maxDiscoveredHosts` | 3 | hand (depth fence: max non-seed hosts per mission; seeds exempt) |
 
 All knobs read from ENV.md / a `config.json` under `.dsh/web-missions/` —
-one mechanism, named in DESIGN when the file exists. No UI for knobs until M6.
+one mechanism, named in DESIGN when the file exists. **Named (5.1): the file
+is `<cwd>/.dsh/web-missions/config.json`** (mission root), read by
+`readConfig(root)` in `src/host/config.ts`; optional file, merges over
+`DEFAULT_CONFIG`, corrupt → `config_corrupt` (fail loud), unknown keys
+ignored. No UI for knobs until M6.
 
 ## Verify
 
