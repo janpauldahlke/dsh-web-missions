@@ -101,6 +101,12 @@ export interface StoredPageRecord extends FetchedPage {
   mission_id: string
   normalized_url: string
   stored_at: string
+  /**
+   * Hops from nearest seed (receipt field). M5 fills it (depth fence);
+   * M4 find reads it with `?? 0` (schema stability, same pattern as
+   * consent_* on FetchedPage).
+   */
+  depth?: number
 }
 
 export interface ReadArtifactResult {
