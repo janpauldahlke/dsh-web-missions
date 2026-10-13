@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { ConsentAttempt, FetchedPage, PageFetcher, PageQuality } from '../shared/types'
+import { DEFAULT_MAX_BYTES } from './config.ts'
 import { ensureSessionDir, sessionsRoot } from './sessions.ts'
 
 /**
@@ -107,6 +108,24 @@ export interface FetcherConfig {
   persistSessions?: boolean
   /** Test escape hatch: session-directory root (default per sessions.ts). */
   sessionsRoot?: string
+  /** M5 5.6: stored-content cap in bytes (default 2 MB via config). */
+  maxBytes?: number
+}
+
+/**
+ * M5 5.6: cap content at `maxBytes` UTF-8 bytes, cutting on a character
+ * boundary (never a split code point). `truncated` iff bytes were dropped.
+ */
+export function truncateToBytes(
+  content: string,
+  maxBytes: number,
+): { content: string; bytes: number; truncated: boolean } {
+  const buf = Buffer.from(content, 'utf8')
+  if (buf.length <= maxBytes) return { content, bytes: buf.length, truncated: false }
+  let cut = maxBytes
+  // step back off continuation bytes (0b10xxxxxx) to a valid boundary
+  while (cut > 0 && (buf[cut] & 0xc0) === 0x80) cut--
+  return { content: buf.subarray(0, cut).toString('utf8'), bytes: cut, truncated: true }
 }
 
 /** SIGTERM grace before SIGKILL when shutting a `watch` process down. */
@@ -223,6 +242,10 @@ export class Browser39Fetcher implements PageFetcher {
 
   private get persistSessions(): boolean {
     return this.config.persistSessions ?? true
+  }
+
+  private get maxBytes(): number {
+    return this.config.maxBytes ?? DEFAULT_MAX_BYTES
   }
 
   /** v0 fetch options (2.0.0 contract; `show_selectors_first` defaults true
@@ -506,8 +529,13 @@ export class Browser39Fetcher implements PageFetcher {
 
   private toFetchedPage(requestedUrl: string, line: B39ResultLine): FetchedPage {
     const finalUrl = line.url ?? requestedUrl
-    const content = line.markdown ?? ''
     const status = typeof line.status === 'number' ? line.status : 0
+
+    // M5 5.6: cap stored content at maxBytes (byte-exact, char-boundary
+    // safe) BEFORE quality assessment — a capped page is what gets stored,
+    // chunked, previewed, and searched.
+    const cap = truncateToBytes(line.markdown ?? '', this.maxBytes)
+    const content = cap.content
 
     const links: { url: string; text: string }[] = []
     for (const l of line.links ?? []) {
@@ -521,10 +549,11 @@ export class Browser39Fetcher implements PageFetcher {
       }
     }
 
-    const byteLength =
-      typeof line.stats?.content_bytes === 'number'
+    const byteLength = cap.truncated
+      ? cap.bytes
+      : typeof line.stats?.content_bytes === 'number'
         ? line.stats.content_bytes
-        : Buffer.byteLength(content, 'utf8')
+        : cap.bytes
 
     const { quality, qualitySignals } = assessQuality({
       status,
@@ -532,6 +561,7 @@ export class Browser39Fetcher implements PageFetcher {
       content,
       thinThresholdChars: this.thinThresholdChars,
     })
+    const qualitySignalsFinal = cap.truncated ? [...qualitySignals, 'truncated'] : qualitySignals
 
     return {
       url: requestedUrl,
@@ -544,7 +574,7 @@ export class Browser39Fetcher implements PageFetcher {
       byteLength,
       fetchedAt: new Date().toISOString(),
       quality,
-      qualitySignals,
+      qualitySignals: qualitySignalsFinal,
       consentAttempted: false,
       consentImproved: false,
     }

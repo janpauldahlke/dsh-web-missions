@@ -47,10 +47,13 @@ export const CONFIG_FILENAME = 'config.json'
 /** Default mission budget in fetch calls (C6; was store.ts `DEFAULT_FETCH_BUDGET`). */
 export const DEFAULT_FETCH_BUDGET = 10
 
+/** Default stored-content cap in bytes (M5 5.6: overflow → `truncated`). */
+export const DEFAULT_MAX_BYTES = 2 * 1024 * 1024
+
 export const DEFAULT_CONFIG: MissionConfig = {
   chunkChars: 2000,
   defaultFetchBudget: DEFAULT_FETCH_BUDGET,
-  maxBytes: 2 * 1024 * 1024,
+  maxBytes: DEFAULT_MAX_BYTES,
   allowlist: 'on',
   persistSessions: true,
   cacheHitCountsAsBudget: false,

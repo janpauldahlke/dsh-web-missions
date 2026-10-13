@@ -172,7 +172,9 @@ check('V5: one new batch', callCount() === 4, 'calls=' + callCount())
 const bl2 = await fetchTool({ url: base + '/blocked' })
 check('V5: blocked re-fetch cached:true + quality blocked', bl2.cached === true && bl2.page_quality === 'blocked' && bl2.artifact_id === bl1.artifact_id, J({ c: bl2.cached, q: bl2.page_quality, a: [bl1.artifact_id, bl2.artifact_id] }))
 check('V5: zero batch on blocked hit', callCount() === 4, 'calls=' + callCount())
-check('V5: blocked cached hint wording', bl2.next_step_hint === 'cached: stored as blocked (age 0d). Re-fetch with force: true if you expect new content.', bl2.next_step_hint)
+// M5 5.6 honesty gate: every thin/blocked receipt (fresh or hit) carries the
+// deterministic do-not-claim text.
+check('V5: blocked cached hint wording', bl2.next_step_hint === 'cached: stored as blocked (age 0d) — do not claim content from this page. Re-fetch with force: true if you expect new content.', bl2.next_step_hint)
 
 // --- V6 ------------------------------------------------------------------------
 const r1 = await fetchTool({ url: base + '/redir' })

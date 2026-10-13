@@ -293,6 +293,8 @@ export function registerMissionTools(ctx: Context): () => void {
           thinThresholdChars: config.thinThresholdChars,
           // M5 5.4 (C7): host-scoped persistent sessions (default on).
           persistSessions: config.persistSessions,
+          // M5 5.6: stored-content cap (overflow → quality_signals: ["truncated"]).
+          maxBytes: config.maxBytes,
         }), {
           url: args.url,
           mission_id: args.mission_id,

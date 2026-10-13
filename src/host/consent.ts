@@ -32,7 +32,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { ConsentAttempt, FetchedPage } from '../shared/types'
+import { DO_NOT_CLAIM, type ConsentAttempt, type FetchedPage } from '../shared/types'
 
 // ---------------------------------------------------------------------------
 // Profiles (asset + override)
@@ -529,19 +529,19 @@ export async function runConsent(
 export function consentNextStepHint(page: FetchedPage, outcome: ConsentOutcome): string {
   const base =
     page.quality === 'blocked'
-      ? 'fetch blocked (see quality_signals) — do not re-fetch this URL; pick another'
-      : 'page is thin (short or likely a consent wall) — try a sample link or re-fetch with force'
+      ? `fetch blocked (see quality_signals) — ${DO_NOT_CLAIM}; do not re-fetch this URL; pick another`
+      : `page is thin (short or likely a consent wall) — ${DO_NOT_CLAIM}; try a sample link or re-fetch with force`
   if (!outcome.attempted) return base
   if (outcome.improved) {
     const after =
       page.quality === 'full'
         ? 'search it with mission_find or fetch one of the sample links'
-        : 'still thin — try a sample link or re-fetch with force'
+        : `still thin — ${DO_NOT_CLAIM}; try a sample link or re-fetch with force`
     return `consent: accept worked — page improved; ${after}`
   }
   return (
-    `${base}. consent: accept was attempted but the wall persists — do not claim content from ` +
-    `this page. Operator escape: preload the accepted cookies into the host session ` +
+    `${base}. consent: accept was attempted but the wall persists — ${DO_NOT_CLAIM}. ` +
+    `Operator escape: preload the accepted cookies into the host session ` +
     `(~/.dsh/browser39/sessions/<host>/config.toml, [[cookies]]) and re-fetch with force.`
   )
 }

@@ -80,6 +80,13 @@ export interface ConsentAttempt {
 
 export type PageQuality = 'full' | 'thin' | 'blocked'
 
+/**
+ * M5 5.6 honesty gate (C4): deterministic text that EVERY thin/blocked
+ * receipt's `next_step_hint` must carry — the model's honesty contract,
+ * enforced by the receipt, not by hoping.
+ */
+export const DO_NOT_CLAIM = 'do not claim content from this page'
+
 export interface FetchedPage {
   /** As requested. */
   url: string

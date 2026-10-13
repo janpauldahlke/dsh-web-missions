@@ -64,7 +64,7 @@
  * Errors propagate as StoreError / FetchError / ConsentProfilesError; the
  * tool layer renders `{ ok: false, error: '<code>: <msg>' }`.
  */
-import type { FetchedPage, PageFetcher } from '../shared/types.ts'
+import { DO_NOT_CLAIM, type FetchedPage, type PageFetcher } from '../shared/types.ts'
 import { PREVIEW_HEAD_CHARS, readArtifact, storeArtifact, type StoredArtifact } from './artifacts.ts'
 import { checkAllowlist, isAllowed, loadAllowlist } from './allowlist.ts'
 import {
@@ -164,9 +164,9 @@ function nextStepHint(quality: FetchedPage['quality']): string {
     case 'full':
       return 'page stored — search it with mission_find or fetch one of the sample links'
     case 'thin':
-      return 'page is thin (short or likely a consent wall) — try a sample link or re-fetch with force'
+      return `page is thin (short or likely a consent wall) — ${DO_NOT_CLAIM}; try a sample link or re-fetch with force`
     case 'blocked':
-      return 'fetch blocked (see quality_signals) — do not re-fetch this URL; pick another'
+      return `fetch blocked (see quality_signals) — ${DO_NOT_CLAIM}; do not re-fetch this URL; pick another`
   }
 }
 
@@ -175,7 +175,17 @@ function cachedNextStepHint(quality: FetchedPage['quality'], age: number): strin
   if (quality === 'full') {
     return `cached: already stored (age ${age}d). Use mission_find, or pass force: true to re-fetch.`
   }
-  return `cached: stored as ${quality} (age ${age}d). Re-fetch with force: true if you expect new content.`
+  return `cached: stored as ${quality} (age ${age}d) — ${DO_NOT_CLAIM}. Re-fetch with force: true if you expect new content.`
+}
+
+/**
+ * M5 5.6 honesty gate: EVERY thin/blocked receipt carries the deterministic
+ * do-not-claim text in `next_step_hint` — enforced at the receipt choke point
+ * (not by hoping each hint path remembers). `full` receipts pass through.
+ */
+function honestyGate(hint: string, quality: FetchedPage['quality']): string {
+  if (quality === 'full' || hint.includes(DO_NOT_CLAIM)) return hint
+  return `${hint} — ${DO_NOT_CLAIM}`
 }
 
 export interface RunFetchArgs {
@@ -367,8 +377,10 @@ export async function runFetch(
     parent_artifact_id: fence.parent_artifact_id,
     budget: budgetView(manifest.budget),
     visited_count: updated.fetched.length,
-    next_step_hint:
+    next_step_hint: honestyGate(
       consentOutcome?.attempted ? consentNextStepHint(page, consentOutcome) : nextStepHint(page.quality),
+      page.quality,
+    ),
     sample_links: stored.links.slice(0, 5).map((l) => l.url),
     ...(hintFindFirst ? { hint_find_first: hintFindFirst } : {}),
   }
@@ -405,7 +417,7 @@ function buildHitReceipt(
     parent_artifact_id: hit.parent_artifact_id ?? null,
     budget: budgetView(manifest.budget),
     visited_count: manifest.fetched.length,
-    next_step_hint: cachedNextStepHint(stored.page.quality, age),
+    next_step_hint: honestyGate(cachedNextStepHint(stored.page.quality, age), stored.page.quality),
     sample_links: stored.links.slice(0, 5).map((l) => l.url),
   }
 }
