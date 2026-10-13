@@ -84,7 +84,9 @@ export function registerMissionTools(ctx: Context): () => void {
     description:
       'Start a new web research mission. Creates <cwd>/.dsh/web-missions/<id>/ ' +
       '(manifest.json + mission.md) and a recents row; the mission becomes the ' +
-      'default active mission for the other mission_* tools.',
+      'default active mission for the other mission_* tools. Optional seeds: ' +
+      'root URLs the mission may wander from — they are depth 0 and their ' +
+      'hosts are exempt from the maxDiscoveredHosts crawl cap.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -92,6 +94,11 @@ export function registerMissionTools(ctx: Context): () => void {
         note: { type: 'string', description: 'Short mission note/title (required).' },
         template_id: { type: 'string', description: 'Optional research template id.' },
         budget: { type: 'integer', description: 'Max fetch calls (default: config knob defaultFetchBudget, 10). Each non-cached fetch attempt costs 1 call.' },
+        seeds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional seed URLs (normalized + deduped by the host). Seeds are depth 0 and their hosts are exempt from the maxDiscoveredHosts crawl cap (the deliberate roots of the mission).',
+        },
         cwd: CWD_PARAM,
       },
     },
@@ -118,6 +125,7 @@ export function registerMissionTools(ctx: Context): () => void {
           note: args.note,
           template_id: args.template_id,
           budget: args.budget,
+          seeds: args.seeds,
         })
         return manifest
       } catch (error) {
@@ -224,7 +232,12 @@ export function registerMissionTools(ctx: Context): () => void {
       'exhausted mission fails with budget_exhausted (start a new mission). ' +
       'Egress is gated by <cwd>/.dsh/allowlist.txt (deny-all default): a URL ' +
       'not in the allowlist fails with allowlist_denied (no fetch, no budget ' +
-      'charge); already-stored URLs are never re-gated.',
+      'charge). The depth fence caps the crawl: a fetch deeper than maxDepth ' +
+      'hops from the nearest seed fails with depth_exceeded, and a fetch onto ' +
+      'a new (maxDiscoveredHosts+1)th non-seed host fails with ' +
+      'host_breadth_exceeded — no fetch, no budget charge (mission_start ' +
+      'seeds are depth 0 and host-exempt; already-stored URLs are never ' +
+      're-gated). Receipts carry depth + parent_artifact_id.',
     parameters: {
       type: 'object',
       additionalProperties: false,

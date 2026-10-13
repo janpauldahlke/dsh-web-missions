@@ -93,6 +93,12 @@ export interface StoreArtifactOptions {
   artifactId?: string
   /** M3: wipe the existing artifact dir contents first (force overwrite). */
   replace?: boolean
+  /**
+   * M5 5.3 (depth fence): persist the fetched URL's depth onto page.json —
+   * read by M4 find matches (`?? 0` for M2-era records, same pattern as
+   * consent_*). Omitted → not written (schema stability).
+   */
+  depth?: number
 }
 
 /** page.json record = FetchedPage + stored metadata. */
@@ -151,6 +157,8 @@ export function storeArtifact(
     mission_id: missionId,
     normalized_url: normalizeUrl(page.finalUrl), // D-M2.2: ledger key = normalized final URL
     stored_at: storedAt,
+    // M5 5.3: depth fence — persist the fetch depth for M4 find matches.
+    ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
   }
   atomicWriteJson(join(dir, 'page.json'), pageRecord)
 

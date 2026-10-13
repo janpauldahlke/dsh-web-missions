@@ -23,6 +23,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { DEFAULT_FETCH_BUDGET, readConfig } from './config.ts'
+import { normalizeUrl } from './normalize.ts'
 
 export { DEFAULT_FETCH_BUDGET }
 export const RECENTS_CAP = 50
@@ -105,6 +106,14 @@ export interface FetchedRow {
    * predate it.
    */
   requested_keys?: string[]
+  /**
+   * M5 5.3 (depth fence): hops from the nearest seed/root at the time this
+   * row was written (0 = seed or fresh root). Optional — M2-era rows predate
+   * it (read as 0). The deterministic lineage rule is in depth-fence.ts.
+   */
+  depth?: number
+  /** M5 5.3: artifact achieving this row's minimal depth (null = root). */
+  parent_artifact_id?: string | null
 }
 
 export interface Manifest {
@@ -117,6 +126,13 @@ export interface Manifest {
   created_at: string
   updated_at: string
   fetched: FetchedRow[]
+  /**
+   * M5 5.3 (depth fence): normalized seed URLs given at mission_start. Seeds
+   * are depth 0 and their HOSTS are exempt from maxDiscoveredHosts (the
+   * deliberate roots of the mission). M2-era manifests predate it (treated
+   * as []).
+   */
+  seeds?: string[]
 }
 
 export interface IndexRow {
@@ -139,6 +155,12 @@ export interface StartOptions {
   template_id?: string
   /** Omitted → DEFAULT_FETCH_BUDGET (D-M1.1). Unit: fetch calls (live in M5). */
   budget?: number
+  /**
+   * M5 5.3 (depth fence): seed URLs. Stored normalized + deduped; they are
+   * depth 0 and their hosts are exempt from maxDiscoveredHosts. Unparsable
+   * seeds fail loud (normalize_failed) like fetch urls.
+   */
+  seeds?: string[]
 }
 
 export interface ListResult {
@@ -286,6 +308,10 @@ export function startMission(root: string, opts: StartOptions): Manifest {
     throw new StoreError('bad_budget', `budget must be a positive number: ${String(opts.budget)}`)
   }
 
+  // M5 5.3 (depth fence): seed roots — normalized (ledger-key form) + deduped.
+  // Unparsable seeds throw normalize_failed (fail loud, same as fetch urls).
+  const seeds = [...new Set((opts.seeds ?? []).map((s) => normalizeUrl(s)))]
+
   const id = newMissionId()
   const now = new Date().toISOString()
   const manifest: Manifest = {
@@ -297,6 +323,7 @@ export function startMission(root: string, opts: StartOptions): Manifest {
     created_at: now,
     updated_at: now,
     fetched: [],
+    ...(seeds.length > 0 ? { seeds } : {}),
   }
 
   const dir = missionDir(root, id)

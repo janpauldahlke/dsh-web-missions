@@ -29,10 +29,20 @@
  * M5 (5.2 egress allowlist, pre-spawn gate):
  * - `<cwd>/.dsh/allowlist.txt` (project-level) gates egress; empty/missing
  *   file = deny all (locked-down dogfood default).
- * - gate order = allowlist → budget, both BEFORE the spawn, both zero-cost
- *   when they fire (no spawn, no budget charge).
  * - only the spawn path is gated (D-M5.4: cache hits are not re-gated — the
  *   page was already admitted); the escape is config `allowlist: 'off'`.
+ *
+ * M5 (5.3 depth fence, D-M5.7/D-M5.8 — crawl boundary):
+ * - `maxDepth` (default 2): max link-hops from the nearest seed/root; a URL's
+ *   depth is the deterministic lineage over the ledger rows + stored
+ *   links.json (min over all parents; seeds and fresh roots are depth 0).
+ * - `maxDiscoveredHosts` (default 3): max distinct NON-SEED hosts the mission
+ *   may fetch; mission_start `seeds` are depth 0 and host-exempt, fresh roots
+ *   are depth 0 but their host counts (D-M5.8: discovery is not seeds).
+ * - gate order = allowlist → depth fence → budget: all BEFORE the spawn, all
+ *   zero-cost when they fire (no spawn, no budget charge).
+ * - rows + fresh receipts carry `depth` + `parent_artifact_id`; hit receipts
+ *   carry the stored values (M2-era rows → 0/null).
  *
  * Errors propagate as StoreError / FetchError; the tool layer renders
  * `{ ok: false, error: '<code>: <msg>' }`.
@@ -41,6 +51,7 @@ import type { FetchedPage, PageFetcher } from '../shared/types.ts'
 import { PREVIEW_HEAD_CHARS, readArtifact, storeArtifact, type StoredArtifact } from './artifacts.ts'
 import { checkAllowlist, loadAllowlist } from './allowlist.ts'
 import { readConfig } from './config.ts'
+import { checkDepthFence, type FenceCheck } from './depth-fence.ts'
 import { normalizeUrl } from './normalize.ts'
 import { FetchError } from './fetcher.ts'
 import {
@@ -75,8 +86,14 @@ export interface FetchReceipt {
   consent_improved: boolean
   chunk_count: number
   preview_head: string
-  depth: 0
-  parent_artifact_id: null
+  /**
+   * M5 5.3 (depth fence): hops from the nearest seed/root. Fresh receipts:
+   * the lineage computed at fetch time; hit receipts: the stored row value
+   * (M2-era rows → 0).
+   */
+  depth: number
+  /** M5 5.3: artifact achieving this url's minimal depth (null = root). */
+  parent_artifact_id: string | null
   /**
    * C6 (M5, S5): the mission budget after this attempt — every receipt
    * carries it (unit = fetch calls).
@@ -180,36 +197,47 @@ export async function runFetch(
   const force = args.force === true
   const hitFree = hit && !force
 
-  // 4. M5 pre-spawn gates — both fire BEFORE the spawn and are zero-cost
-  //    (no spawn, no budget charge). Order: allowlist, then budget.
-  //
-  // 4a. Allowlist (M5 5.2, egress control): gates only when a spawn is about
-  //     to happen (D-M5.4: cache hits are NOT re-gated — the page was already
-  //     admitted). Deny-all default: an empty/missing .dsh/allowlist.txt
-  //     admits nothing (the documented escape is config `allowlist: 'off'`).
-  if (!hitFree && config.allowlist === 'on') {
+  // 4. M5 pre-spawn gates — all fire BEFORE the spawn and are zero-cost
+  //    (no spawn, no budget charge). Order: allowlist → depth fence → budget.
+  //    Cache hits skip the spawn-path gates (D-M5.4: the page was already
+  //    admitted); a charged hit (knob on) still pays the budget.
+  if (hitFree) {
+    if (hitsCost && budgetExhausted(manifest.budget)) {
+      throw new StoreError(
+        'budget_exhausted',
+        `${manifest.budget.max} fetch calls used; budget exhausted — start a new mission to continue (no override in v0)`,
+      )
+    }
+    if (hitsCost) {
+      manifest = chargeBudget(root, missionId)
+    }
+    return buildHitReceipt(root, missionId, url, manifest, hit, now())
+  }
+
+  // 4a. Allowlist (M5 5.2, egress control): deny-all default — an
+  //     empty/missing .dsh/allowlist.txt admits nothing (the documented
+  //     escape is config `allowlist: 'off'`).
+  if (config.allowlist === 'on') {
     checkAllowlist(url, loadAllowlist(root))
   }
   //
-  // 4b. C6 budget gate: this attempt is CHARGED when it spawns (always) or
-  //     when hits cost (knob on). Exhausted → hard stop BEFORE any spawn
-  //     (D-M5.2: no override; a new mission_start continues).
-  const willCharge = !hitFree || hitsCost
-  if (willCharge && budgetExhausted(manifest.budget)) {
+  // 4b. Depth fence (M5 5.3, D-M5.7/D-M5.8, crawl boundary): max link-hops
+  //     from the nearest seed (maxDepth) + max distinct non-seed hosts
+  //     (maxDiscoveredHosts). Refusals: depth_exceeded / host_breadth_exceeded.
+  //     `force` re-gates (the hit path above is the only skip).
+  const fence = checkDepthFence(root, manifest, url, config)
+  //
+  // 4c. C6 budget gate: a spawn attempt is always CHARGED. Exhausted → hard
+  //     stop BEFORE the spawn (D-M5.2: no override; a new mission_start
+  //     continues). Persist the charge BEFORE the spawn: a failed/timeout
+  //     fetch still costs its call (it was a browser spawn).
+  if (budgetExhausted(manifest.budget)) {
     throw new StoreError(
       'budget_exhausted',
       `${manifest.budget.max} fetch calls used; budget exhausted — start a new mission to continue (no override in v0)`,
     )
   }
-  if (willCharge) {
-    // Persist the charge BEFORE the spawn: a failed/timeout fetch still costs
-    // its call (it was a browser spawn).
-    manifest = chargeBudget(root, missionId)
-  }
-
-  if (hitFree) {
-    return buildHitReceipt(root, missionId, url, manifest, hit, now())
-  }
+  manifest = chargeBudget(root, missionId)
 
   // 5. fetch (timeout / spawn failures surface as FetchError fetch_failed / spawn_failed)
   const page = await fetcher.fetch(url, { sessionKey: hostSessionKey(url) })
@@ -225,6 +253,8 @@ export async function runFetch(
   const stored: StoredArtifact = storeArtifact(root, missionId, page, {
     chunkChars: args.chunkChars,
     ...(target ? { artifactId: target.artifact_id, replace: true } : {}),
+    // M5 5.3: persist the fetch depth onto page.json (M4 find matches read it).
+    depth: fence.depth,
   })
 
   // Merge the requested alias into the row's alias list (ordered, deduped) so
@@ -241,6 +271,10 @@ export async function runFetch(
     // C6 audit: a ledger row is only ever written by a charged (non-cached)
     // attempt in v0 — the field makes that explicit.
     budget_charged: true,
+    // M5 5.3 (depth fence): lineage at the moment of fetch — the min over
+    // the ledger BEFORE this row was written (deterministic, D-M5.7).
+    depth: fence.depth,
+    parent_artifact_id: fence.parent_artifact_id,
   }
   const updated = target
     ? updateFetchedRow(root, missionId, target.normalized_url, row)
@@ -276,8 +310,9 @@ export async function runFetch(
     consent_improved: page.consentImproved,
     chunk_count: stored.chunkCount,
     preview_head: stored.previewHead,
-    depth: 0,
-    parent_artifact_id: null,
+    // M5 5.3: live lineage from the depth fence (gate 4b, pre-spawn).
+    depth: fence.depth,
+    parent_artifact_id: fence.parent_artifact_id,
     budget: budgetView(manifest.budget),
     visited_count: updated.fetched.length,
     next_step_hint: nextStepHint(page.quality),
@@ -311,8 +346,10 @@ function buildHitReceipt(
     consent_improved: stored.page.consentImproved ?? false,
     chunk_count: stored.chunkCount,
     preview_head: (stored.page.content ?? '').slice(0, PREVIEW_HEAD_CHARS),
-    depth: 0,
-    parent_artifact_id: null,
+    // M5 5.3: the stored lineage (hits are not re-gated, D-M5.4). M2-era
+    // rows predate the fields → 0/null (schema stability).
+    depth: hit.depth ?? 0,
+    parent_artifact_id: hit.parent_artifact_id ?? null,
     budget: budgetView(manifest.budget),
     visited_count: manifest.fetched.length,
     next_step_hint: cachedNextStepHint(stored.page.quality, age),
