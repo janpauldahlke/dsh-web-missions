@@ -59,6 +59,8 @@ writeFileSync(wrapper, `#!/bin/sh\necho "call" >> ${JSON.stringify(callLog)}\nex
 chmodSync(wrapper, 0o755)
 const callCount = () => require('node:fs').readFileSync(callLog, 'utf8').split('\n').filter(Boolean).length
 process.env.BROWSER39_BIN = wrapper
+// M5 5.4: hermetic host-scoped session dirs (never touch ~/.dsh/browser39/sessions).
+process.env.BROWSER39_SESSIONS_DIR = join(work, 'b39-sessions')
 
 // --- fixture server (full page, 404, redirect chain) ---------------------------
 const FILLER = 'lorem ipsum dolor sit amet '.repeat(120) // → ~3240 chars

@@ -6,29 +6,40 @@ import {
   readFileSync,
   rmSync,
   statSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { FetchedPage, PageFetcher, PageQuality } from '../shared/types'
+import { ensureSessionDir, sessionsRoot } from './sessions.ts'
 
 /**
  * C3 — Browser39Fetcher, the v0 PageFetcher implementation (DESIGN.md §C3).
  *
- * Transport: `browser39 batch` JSONL (review #4, Eris-proven). One batch
- * invocation per fetch: write a one-line commands.jsonl, spawn
- * `browser39 batch <in> --output <out>`, read the result line. One-shot
- * `fetch` is rejected — consent (C10, M5) needs the batch action protocol.
+ * Transport: `browser39 watch` JSONL (5.4, D-M5.9 — was `batch`, review #4).
+ * One managed `watch` process per fetch: write the command line(s) BEFORE
+ * spawn (watch processes pre-existing lines at startup — no startup race),
+ * spawn `browser39 watch <in> --output <out>`, poll the output file for the
+ * result line, then SIGTERM the process group (session-save flush) and
+ * unlink the tempdir. One-shot `fetch` is rejected — consent (C10, 5.5)
+ * needs the multi-command session protocol.
+ *
+ * Sessions (5.4, C7): `persistSessions` (config, default on) + a sessionKey
+ * (C3: lowercased hostname, no port) → `--config
+ * <~/.dsh/browser39/sessions/<host>/config.toml>` (created if absent,
+ * sessions.ts), so cookies persist to a per-host `session.enc` shared across
+ * missions and projects. `persistSessions: false` or no sessionKey →
+ * `--no-persist` (forced in-memory).
  *
  * Contract pinned by the 2.0.0 probe (M2 board, slice 2.1):
  *  - result line `url` = FINAL post-redirect URL
  *  - HTTP 4xx/5xx → `ok:true` line with `status` (NOT an error line)
  *  - `ok:false` line → {error, code, retryable} (INVALID_URL, HTTP_ERROR, …)
- *  - output file is APPENDED by browser39 → unlink before spawn
+ *  - output file is APPENDED by browser39 → start from a clean file
  *  - `show_selectors_first` defaults true in 2.0.0 → set false for raw content
  *  - `links[].href` is relative → resolve against the final URL
- *  - batch sessions are always in-memory (no disk persistence)
+ *  - one-shot `fetch`/`batch` are ALWAYS in-memory (2.0.0 docs) — persistence
+ *    requires `watch`/`mcp`; hence the transport amendment (D-M5.9)
  */
 
 /** v0 CMP marker list (D-M2.5); named constant, amended in the M2 board when it misfires. */
@@ -65,7 +76,19 @@ export interface FetcherConfig {
   thinThresholdChars: number
   /** Explicit browser39 binary (BROWSER39_BIN equivalent). */
   browser39Bin?: string
+  /**
+   * M5 5.4 (C7): host-scoped persistent browser39 sessions (config knob,
+   * default on). Off → `--no-persist` (in-memory, nothing written).
+   */
+  persistSessions?: boolean
+  /** Test escape hatch: session-directory root (default per sessions.ts). */
+  sessionsRoot?: string
 }
+
+/** SIGTERM grace before SIGKILL when shutting a `watch` process down. */
+const WATCH_SHUTDOWN_GRACE_MS = 1500
+/** Result-file poll interval (watch writes the line well under this). */
+const RESULT_POLL_MS = 75
 
 export interface Browser39Bin {
   cmd: string
@@ -172,11 +195,14 @@ export class Browser39Fetcher implements PageFetcher {
     return this.config.thinThresholdChars ?? DEFAULT_THIN_THRESHOLD_CHARS
   }
 
+  private get persistSessions(): boolean {
+    return this.config.persistSessions ?? true
+  }
+
   async fetch(
     url: string,
     opts?: { signal?: AbortSignal; sessionKey?: string },
   ): Promise<FetchedPage> {
-    // sessionKey is schema-stable now; C7/M5 owns its use (consent re-injection).
     const bin = resolveBrowser39Bin(this.config.browser39Bin)
     if (!bin) {
       throw new FetchError(
@@ -185,10 +211,19 @@ export class Browser39Fetcher implements PageFetcher {
       )
     }
 
+    // M5 5.4 (C7): host-scoped session — the per-host config IS the session
+    // scope. No sessionKey (or knob off) → forced in-memory, nothing written.
+    const sessionConfig =
+      this.persistSessions && opts?.sessionKey
+        ? ensureSessionDir(opts.sessionKey, this.config.sessionsRoot ?? sessionsRoot())
+        : null
+
     const workdir = mkdtempSync(join(tmpdir(), 'web-missions-b39-'))
     const inPath = join(workdir, 'commands.jsonl')
     const outPath = join(workdir, 'results.jsonl')
     try {
+      // Written BEFORE spawn: `watch` processes pre-existing lines at
+      // startup (no startup race). browser39 APPENDS results — start clean.
       writeFileSync(
         inPath,
         `${JSON.stringify({
@@ -205,14 +240,9 @@ export class Browser39Fetcher implements PageFetcher {
           },
         })}\n`,
       )
-      // browser39 APPENDS to the output file — start clean.
-      try {
-        unlinkSync(outPath)
-      } catch {
-        // fresh tempdir; nothing to unlink
-      }
+      writeFileSync(outPath, '')
 
-      const line = await this.spawnBatch(bin, inPath, outPath, opts?.signal)
+      const line = await this.spawnWatch(bin, inPath, outPath, sessionConfig, opts?.signal)
 
       if (line.ok === false) {
         throw new FetchError(
@@ -229,16 +259,27 @@ export class Browser39Fetcher implements PageFetcher {
     }
   }
 
-  private spawnBatch(
+  /**
+   * One managed `watch` process (D-M5.9): spawn with the command line(s)
+   * already in place, poll the output file for the `f1` result line, then
+   * SIGTERM the group (flush the session save) → SIGKILL after a grace →
+   * resolve with the result. The deadline covers the whole call.
+   */
+  private spawnWatch(
     bin: Browser39Bin,
     inPath: string,
     outPath: string,
+    sessionConfig: string | null,
     signal?: AbortSignal,
   ): Promise<B39ResultLine> {
     return new Promise((resolve, reject) => {
       let child: ReturnType<typeof spawn>
       try {
-        child = spawn(bin.cmd, [...bin.args, 'batch', inPath, '--output', outPath], {
+        const args = [...bin.args, 'watch', inPath]
+        if (sessionConfig) args.push('--config', sessionConfig)
+        else args.push('--no-persist')
+        args.push('--output', outPath)
+        child = spawn(bin.cmd, args, {
           cwd: dirname(inPath),
           stdio: ['ignore', 'ignore', 'pipe'],
           // New process group so timeout/abort kills the whole tree (bin.js
@@ -254,34 +295,78 @@ export class Browser39Fetcher implements PageFetcher {
 
       let stderrBuf = ''
       let settled = false
+      let pollTimer: ReturnType<typeof setInterval> | null = null
+      let deadlineTimer: ReturnType<typeof setTimeout> | null = null
+      let shutdownStarted = false
+
       const finish = (err: Error | null, line?: B39ResultLine): void => {
         if (settled) return
         settled = true
+        if (pollTimer !== null) clearInterval(pollTimer)
+        if (deadlineTimer !== null) clearTimeout(deadlineTimer)
+        signal?.removeEventListener('abort', onAbort)
         if (err) reject(err)
         else resolve(line as B39ResultLine)
       }
 
-      const timer = setTimeout(() => {
-        this.killChild(child)
+      // Graceful shutdown: SIGTERM the group (browser39 flushes the session
+      // save), SIGKILL after the grace if it is still alive.
+      const beginShutdown = (): void => {
+        if (shutdownStarted) return
+        shutdownStarted = true
+        this.killGroup(child, 'SIGTERM')
+        setTimeout(() => this.killGroup(child, 'SIGKILL'), WATCH_SHUTDOWN_GRACE_MS).unref()
+      }
+
+      // Poll the appended result file for our line (id `f1`).
+      const readResult = (): B39ResultLine | undefined => {
+        let raw: string
+        try {
+          raw = readFileSync(outPath, 'utf8')
+        } catch {
+          return undefined
+        }
+        const lines = raw.split('\n')
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (lines[i].trim() === '') continue
+          try {
+            const l = JSON.parse(lines[i]) as B39ResultLine
+            if (l.id === 'f1') return l
+          } catch {
+            // partial line still being written — keep polling
+          }
+        }
+        return undefined
+      }
+
+      const onAbort = (): void => {
+        beginShutdown()
+        finish(new FetchError('fetch_failed', 'fetch aborted'))
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+
+      deadlineTimer = setTimeout(() => {
+        beginShutdown()
         finish(
           new FetchError(
             'fetch_failed',
-            `browser39 spawn timed out after ${this.timeoutMs} ms`,
+            `browser39 fetch timed out after ${this.timeoutMs} ms`,
           ),
         )
       }, this.timeoutMs)
 
-      const onAbort = (): void => {
-        this.killChild(child)
-        finish(new FetchError('fetch_failed', 'fetch aborted'))
-      }
-      signal?.addEventListener('abort', onAbort, { once: true })
+      pollTimer = setInterval(() => {
+        const line = readResult()
+        if (line) {
+          beginShutdown()
+          finish(null, line)
+        }
+      }, RESULT_POLL_MS)
 
       child.stderr?.on('data', (d: Buffer) => {
         stderrBuf = (stderrBuf + d.toString()).slice(-2000)
       })
       child.on('error', (e: NodeJS.ErrnoException) => {
-        clearTimeout(timer)
         finish(
           new FetchError(
             'spawn_failed',
@@ -292,52 +377,34 @@ export class Browser39Fetcher implements PageFetcher {
         )
       })
       child.on('close', (code) => {
-        clearTimeout(timer)
-        signal?.removeEventListener('abort', onAbort)
-        let lines: B39ResultLine[] = []
-        try {
-          const raw = readFileSync(outPath, 'utf8')
-          lines = raw
-            .split('\n')
-            .filter((l) => l.trim() !== '')
-            .map((l) => JSON.parse(l) as B39ResultLine)
-        } catch (e) {
-          finish(
-            new FetchError(
-              'fetch_failed',
-              `browser39 produced no parseable results (exit ${code}): ${tail(stderrBuf)}`,
-            ),
-          )
+        // Early exit (e.g. invalid config): settle with what the file holds.
+        const line = readResult()
+        if (line) {
+          finish(null, line)
           return
         }
-        // Single command per batch; match by id, fall back to the first line.
-        const line = lines.find((l) => l.id === 'f1') ?? lines[0]
-        if (!line) {
-          finish(
-            new FetchError(
-              'fetch_failed',
-              `browser39 produced no result line (exit ${code}): ${tail(stderrBuf)}`,
-            ),
-          )
-          return
-        }
-        finish(null, line)
+        finish(
+          new FetchError(
+            'fetch_failed',
+            `browser39 exited (code ${code}) without a result line: ${tail(stderrBuf)}`,
+          ),
+        )
       })
     })
   }
 
-  private killChild(child: ReturnType<typeof spawn>): void {
+  private killGroup(child: ReturnType<typeof spawn>, signalName: 'SIGTERM' | 'SIGKILL'): void {
     try {
       if (child.pid !== undefined) {
         // Kill the whole process group (bin.js shims execFileSync the platform binary).
-        process.kill(-child.pid, 'SIGKILL')
+        process.kill(-child.pid, signalName)
         return
       }
     } catch {
       // not a group leader (or already dead) — fall through
     }
     try {
-      child.kill('SIGKILL')
+      child.kill(signalName)
     } catch {
       // already dead
     }

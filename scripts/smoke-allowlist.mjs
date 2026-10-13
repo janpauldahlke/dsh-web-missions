@@ -297,6 +297,8 @@ process.exit(fail === 0 ? 0 : 1)
 `
 
 // --- run both ------------------------------------------------------------------
+// M5 5.4: hermetic host-scoped session dirs (never touch ~/.dsh/browser39/sessions).
+process.env.BROWSER39_SESSIONS_DIR = mkdtempSync(join(tmpdir(), 'smoke-allowlist-sess-'))
 let rc = 0
 
 const dirA = mkdtempSync(join(tmpdir(), 'smoke-allowlist-a-'))

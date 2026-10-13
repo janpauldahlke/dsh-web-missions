@@ -287,6 +287,8 @@ export function registerMissionTools(ctx: Context): () => void {
         return await runFetch(root, new Browser39Fetcher({
           fetchTimeoutMs: config.fetchTimeoutMs,
           thinThresholdChars: config.thinThresholdChars,
+          // M5 5.4 (C7): host-scoped persistent sessions (default on).
+          persistSessions: config.persistSessions,
         }), {
           url: args.url,
           mission_id: args.mission_id,

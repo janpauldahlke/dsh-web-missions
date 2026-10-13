@@ -168,6 +168,8 @@ main().catch((e) => { console.error('FATAL harness error: ' + (e && e.stack || e
 
 const { spawnSync } = await import('node:child_process')
 const dir = mkdtempSync(join(tmpdir(), 'smoke-fetcher-'))
+// M5 5.4: hermetic host-scoped session dirs (never touch ~/.dsh/browser39/sessions).
+process.env.BROWSER39_SESSIONS_DIR = join(dir, 'b39-sessions')
 let rc = 1
 try {
   writeFileSync(join(dir, 'harness.ts'), harness)

@@ -1,6 +1,6 @@
 # M_5 — ledger (budget + allowlist + sessions/consent v0)
 
-Phase: **M5** · Status: in flight — 5.3 done (see `M_5_ledger.status.md`)
+Phase: **M5** · Status: in flight — 5.4 done (see `M_5_ledger.status.md`)
 Depends on: M2 (fetch path), M3 (cache-hit receipts), M4 (skill honesty
   contract to enforce).
 
@@ -180,6 +180,8 @@ ignored. No UI for knobs until M6.
 | D-M5.6 | S6 boundary | allowlist = fetch egress; discovery explicitly outside the no-cloud claim |
 | D-M5.7 | Depth fence | `maxDepth` (default 2) + `maxDiscoveredHosts` (default 3); lineage via stored links; seeds depth 0 / host-exempt; gate pre-spawn; refusals free (no budget charge) |
 | D-M5.8 | Discovery vs fence | search results are not seeds; fetching them consumes discovered-host budget (M7 coupling) |
+| D-M5.9 | Transport amendment (C3) | `browser39 batch` → `browser39 watch`: `batch` is always in-memory (never writes `session.enc`); `watch` persists the session per host (`--config [session] session_path`) and saves on SIGTERM. Result JSONL identical, so the `PageFetcher` port is untouched. This is the consent prerequisite: accepted cookies must survive the refetch |
+| D-M5.10 | Session layout + knobs | `~/.dsh/browser39/sessions/<host>/` (host = lowercased hostname, no port); per-host `config.toml` **create-if-absent** (operator escape hatch, e.g. `[[cookies]]` preload); `session.enc` owned by browser39; `persistSessions` config knob (default `true`; `false` → `--no-persist` in-memory); `BROWSER39_SESSIONS_DIR` env override (tests) |
 
 ## Seam consumption
 
@@ -191,6 +193,10 @@ ignored. No UI for knobs until M6.
   enforce the honesty contract.
 - **C4 amendment (2026-10-12)** — receipt gains `depth` + `parent_artifact_id`
   (null/0 in M2, filled by the fence).
+- **C3 transport amendment (2026-10-13, D-M5.9)** — the fetcher's browser39
+  transport moves from `batch` to `watch` (slice 5.4): the port and the result
+  shape are unchanged; only the process lifecycle (persistent, SIGTERM-saved
+  per-host session) differs. This supersedes the KICKOFF ENV.md line.
 - **C6/C7** — born here, frozen at M5 green.
 - **C10** — consent tactic seam born here (review #4, Eris-ported); v0 ships
   one tactic (`LabelClickTactic`) + labels asset.
