@@ -299,7 +299,81 @@ console.log(fail === 0 ? 'harness B: all checks passed' : 'harness B: ' + fail +
 process.exit(fail === 0 ? 0 : 1)
 `
 
-// --- run both ------------------------------------------------------------------
+// --- Harness C: skill registration (V6 named checks: built lib + real file) ----
+const harnessC = `
+import { readFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { createRequire } from 'node:module'
+import { parseSkillFile, SKILL_NAME } from '${abs('../src/host/skill.ts')}'
+
+const repoRoot = ${JSON.stringify(repoRoot)}
+const require2 = createRequire(import.meta.url)
+const lib = require2(join(repoRoot, 'lib', 'index.js'))
+
+let fail = 0
+const check = (label, cond, detail) => { if (cond) console.log('ok   ' + label) ; else { fail++; console.error('FAIL ' + label + (detail ? ' :: ' + detail : '')) } }
+
+// --- named check 1: the out-of-tree skill file parses (harness semantics) ------
+const skillFile = join(repoRoot, 'skills', SKILL_NAME, 'SKILL.md')
+check('skill file: exists in package', existsSync(skillFile), skillFile)
+const parsed = parseSkillFile(readFileSync(skillFile, 'utf8'))
+check('skill file: name', parsed.name === 'web-mission-workflow', parsed.name)
+check('skill file: description non-empty', parsed.description.length > 20, parsed.description)
+check('skill file: whenToUse present', typeof parsed.whenToUse === 'string' && parsed.whenToUse.length > 10)
+const body = parsed.body
+check('skill file: frontmatter removed from body', !body.startsWith('---') && body.includes('# web-mission-workflow'))
+
+// ritual: all 5 steps with the named tools
+check('skill ritual: start', body.includes('mission_start({ note })'))
+check('skill ritual: fetch + page_quality honesty', body.includes('mission_fetch({ url })') && body.includes('page_quality') && body.includes('thin') && body.includes('blocked'))
+check('skill ritual: find before same-host fetch', body.includes('mission_find({ query })') && body.includes('same-host'))
+check('skill ritual: synthesize mission.md with citations', body.includes('mission.md') && body.includes('artifact_id'))
+check('skill ritual: stop with reason', body.includes('mission_stop({ reason })'))
+
+// template: kurzprofil resolvable by name, all fields present
+check('kurzprofil: named template section', body.includes('Template: kurzprofil'))
+check('kurzprofil: Name/HQ/Description/Key numbers/Sources fields', body.includes('### <Name>') && body.includes('**HQ:**') && body.includes('**Description:**') && body.includes('**Key numbers (as found):**') && body.includes('**Sources:**'))
+check('kurzprofil: citation form [p-…](url)', body.includes('[p-…](url)'))
+check('kurzprofil: no-memory rule', body.includes('never fill the gap from memory'))
+
+// --- named check 2: built lib registers the skill on ctx.skills -----------------
+const tools = []
+const skills = []
+const ctx = {
+  tools: { register: (def) => { tools.push(def); return () => {} } },
+  skills: { register: (def) => { skills.push(def); return () => {} } },
+  effect: () => {},
+  inject: () => {},
+  logger: () => ({ warn: () => {}, error: () => {} }),
+}
+lib.apply(ctx)
+check('register: exactly one skill', skills.length === 1, JSON.stringify(skills.map((s) => s.name)))
+const s = skills[0] || {}
+check('register: name', s.name === 'web-mission-workflow', s.name)
+check('register: description from file', s.description === parsed.description)
+check('register: body = file content (frontmatter removed)', s.content === body)
+check('register: resourceBase = skill directory', s.resourceBase?.kind === 'directory' && s.resourceBase?.path === join(repoRoot, 'skills', SKILL_NAME), JSON.stringify(s.resourceBase))
+check('register: invocation model+user', s.invocation?.modelInvocable === true && s.invocation?.userInvocable === true, JSON.stringify(s.invocation))
+check('register: source bundled', s.source === 'bundled', s.source)
+
+// degraded: no skills face → apply must not throw, tools still register
+const tools2 = []
+const ctx2 = {
+  tools: { register: (def) => { tools2.push(def); return () => {} } },
+  effect: () => {},
+  inject: () => {},
+  logger: () => ({ warn: () => {}, error: () => {} }),
+}
+let threw = false
+try { lib.apply(ctx2) } catch { threw = true }
+check('degraded: no skills face, apply does not throw', threw === false)
+check('degraded: tools still registered', tools2.length === 6, String(tools2.length))
+
+console.log(fail === 0 ? 'harness C: all checks passed' : 'harness C: ' + fail + ' FAILURES')
+process.exit(fail === 0 ? 0 : 1)
+`
+
+// --- run all ---------------------------------------------------------------------
 let rc = 0
 
 const dirA = mkdtempSync(join(tmpdir(), 'smoke-find-a-'))
@@ -322,6 +396,16 @@ try {
   if (out.status !== 0) { rc = 1; console.error('harness B exit ' + out.status) }
 } finally {
   rmSync(dirB, { recursive: true, force: true })
+}
+
+const dirC = mkdtempSync(join(tmpdir(), 'smoke-find-c-'))
+try {
+  writeFileSync(join(dirC, 'c.ts'), harnessC)
+  buildSync({ entryPoints: [join(dirC, 'c.ts')], bundle: true, platform: 'node', format: 'esm', target: 'node20', outfile: join(dirC, 'c.mjs'), absWorkingDir: here })
+  const out = spawnSync(process.execPath, [join(dirC, 'c.mjs')], { encoding: 'utf8', stdio: ['ignore', 'inherit', 'inherit'] })
+  if (out.status !== 0) { rc = 1; console.error('harness C exit ' + out.status) }
+} finally {
+  rmSync(dirC, { recursive: true, force: true })
 }
 
 process.exit(rc)

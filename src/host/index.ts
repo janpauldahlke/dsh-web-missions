@@ -6,6 +6,9 @@
  * - Routes nest under `ctx.inject(['webServer'], …)` so headless profiles
  *   activate the tools without waiting on webServer (proven pattern:
  *   dsh-memento / dsh-local-long-horizon).
+ * - M4 (D5): registers the `web-mission-workflow` skill on `ctx.skills`
+ *   (body = skills/web-mission-workflow/SKILL.md; ritual + kurzprofil
+ *   template — scaffolding for the model, not host logic).
  *
  * apply must never throw: each registration degrades to a logged error.
  *
@@ -18,6 +21,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { HEALTH_ROUTE, PLUGIN, VERSION } from '../shared/types.ts'
 import { registerMissionsRoutes } from './routes.ts'
+import { registerMissionSkill } from './skill.ts'
 import { registerMissionTools } from './tools.ts'
 
 export const name = PLUGIN
@@ -69,6 +73,13 @@ export function apply(ctx: Context): void {
   } catch (error) {
     ctx.logger?.(PLUGIN)
       .warn('tool registration failed (continuing without it): %s', errorMessage(error))
+  }
+  // M4 (D5): web-mission-workflow skill on the harness skill registry.
+  try {
+    registerMissionSkill(ctx)
+  } catch (error) {
+    ctx.logger?.(PLUGIN)
+      .warn('skill registration failed (continuing without it): %s', errorMessage(error))
   }
   // Routes only exist where a web server is present (dsh web); headless
   // profiles simply skip them.

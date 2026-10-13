@@ -7,11 +7,11 @@
 //      backdated-row age_days with an injected clock, force overwrite, and a
 //      redirect alias /redir → /target).
 //   B) tool-level harness (repo-context bundle, child process): applies the
-//      BUILT lib, asserts 5 tools registered incl. mission_fetch, runs
-//      mission_start + mission_fetch end-to-end (receipt + on-disk artifacts),
-//      M3 tool-level cache hit + force (one row per URL),
-//      404 → blocked receipt, unparsable → normalize_failed (no ledger row),
-//      dead BROWSER39_BIN → spawn_failed, empty cwd → no_mission.
+//      BUILT lib, asserts 6 tools + the web-mission-workflow skill registered
+//      (incl. mission_fetch), runs mission_start + mission_fetch end-to-end
+//      (receipt + on-disk artifacts), M3 tool-level cache hit + force (one row
+//      per URL), 404 → blocked receipt, unparsable → normalize_failed (no
+//      ledger row), dead BROWSER39_BIN → spawn_failed, empty cwd → no_mission.
 // Exits non-zero on any failure.
 import { buildSync } from 'esbuild'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs'
@@ -317,8 +317,10 @@ let fail = 0
 const check = (label, cond, detail) => { if (cond) console.log('ok   ' + label) ; else { fail++; console.error('FAIL ' + label + (detail ? ' :: ' + detail : '')) } }
 
 const tools = []
+const skills = []
 const ctx = {
   tools: { register: (def) => { tools.push(def); return () => {} } },
+  skills: { register: (def) => { skills.push(def); return () => {} } },
   effect: () => {},
   inject: () => {},
   logger: () => ({ warn: () => {}, error: () => {} }),
@@ -326,6 +328,7 @@ const ctx = {
 lib.apply(ctx)
 const names = tools.map((t) => t.name)
 check('tools: 6 registered (M4 adds mission_find)', names.length === 6, JSON.stringify(names))
+check('skill: web-mission-workflow registered', skills.length === 1 && skills[0].name === 'web-mission-workflow' && skills[0].content.includes('Template: kurzprofil'), JSON.stringify(skills.map((s) => s.name)))
 check('tools: mission_fetch present', names.includes('mission_fetch'), JSON.stringify(names))
 const find = (n) => tools.find((t) => t.name === n)
 
