@@ -20,7 +20,7 @@
 //        acceptance mission with the rows the in-process tools wrote.
 // Exit 0 iff every check passes. Never touches :3080 / :8080.
 import http from 'node:http'
-import { mkdtempSync, writeFileSync, chmodSync, existsSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -108,6 +108,9 @@ const check = (label, cond, detail) => { if (cond) console.log('ok   ' + label);
 const started = await byName.mission_start.execute({ note: 'M2 acceptance', cwd: repoRoot }, exec())
 check('setup: mission started', !!started.mission_id, J(started))
 const mid = started.mission_id
+// M5 5.2: egress allowlist (deny-all default) — permit the local fixture server.
+mkdirSync(join(repoRoot, '.dsh'), { recursive: true })
+writeFileSync(join(repoRoot, '.dsh', 'allowlist.txt'), '127.0.0.1\n')
 const artDir = (aid) => join(repoRoot, '.dsh', 'web-missions', mid, 'pages', aid)
 
 // --- V1 ------------------------------------------------------------------------

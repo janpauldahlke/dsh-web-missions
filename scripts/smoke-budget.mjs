@@ -96,6 +96,9 @@ const mkPage = (url, over): FetchedPage => ({
 })
 
 const root = join(mkdtempSync(join('/tmp', 'smoke-budget-')), 'root')
+// M5 5.2: permit the fake hosts — this suite tests budget mechanics; the
+// deny-all default allowlist would gate every fake fetch below.
+writeFileSync(join(root, '..', 'allowlist.txt'), '*.example')
 
 // --- pure budget view helpers
 const b3 = { max: 3 }
@@ -207,7 +210,7 @@ process.exit(fail === 0 ? 0 : 1)
 // --- Harness B: tool level (applies the BUILT lib) -----------------------------
 const harnessB = `
 import http from 'node:http'
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 
@@ -239,6 +242,9 @@ const exec = () => ({})
 // --- default budget = 10
 const started = await byName.mission_start.execute({ note: 'budget tool', cwd: workdir }, exec())
 check('tool: start default budget 10', started.budget.max === 10, JSON.stringify(started.budget))
+// M5 5.2: permit the local fixture server (deny-all default allowlist).
+mkdirSync(join(workdir, '.dsh'), { recursive: true })
+writeFileSync(join(workdir, '.dsh', 'allowlist.txt'), '127.0.0.1')
 
 // --- budget-2 mission: two charged fresh fetches, 3rd refused
 const m2 = await byName.mission_start.execute({ note: 'budget 2', budget: 2, cwd: workdir }, exec())

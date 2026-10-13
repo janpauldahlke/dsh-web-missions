@@ -26,11 +26,20 @@
  * - every receipt carries `budget: { max, spent, remaining, unit }`.
  * - ledger rows written by a charged attempt carry `budget_charged: true`.
  *
+ * M5 (5.2 egress allowlist, pre-spawn gate):
+ * - `<cwd>/.dsh/allowlist.txt` (project-level) gates egress; empty/missing
+ *   file = deny all (locked-down dogfood default).
+ * - gate order = allowlist → budget, both BEFORE the spawn, both zero-cost
+ *   when they fire (no spawn, no budget charge).
+ * - only the spawn path is gated (D-M5.4: cache hits are not re-gated — the
+ *   page was already admitted); the escape is config `allowlist: 'off'`.
+ *
  * Errors propagate as StoreError / FetchError; the tool layer renders
  * `{ ok: false, error: '<code>: <msg>' }`.
  */
 import type { FetchedPage, PageFetcher } from '../shared/types.ts'
 import { PREVIEW_HEAD_CHARS, readArtifact, storeArtifact, type StoredArtifact } from './artifacts.ts'
+import { checkAllowlist, loadAllowlist } from './allowlist.ts'
 import { readConfig } from './config.ts'
 import { normalizeUrl } from './normalize.ts'
 import { FetchError } from './fetcher.ts'
@@ -171,9 +180,20 @@ export async function runFetch(
   const force = args.force === true
   const hitFree = hit && !force
 
-  // 4. C6 budget gate (M5): this attempt is CHARGED when it spawns (always)
-  //    or when hits cost (knob on). Exhausted → hard stop BEFORE any spawn
-  //    (D-M5.2: no override; a new mission_start continues).
+  // 4. M5 pre-spawn gates — both fire BEFORE the spawn and are zero-cost
+  //    (no spawn, no budget charge). Order: allowlist, then budget.
+  //
+  // 4a. Allowlist (M5 5.2, egress control): gates only when a spawn is about
+  //     to happen (D-M5.4: cache hits are NOT re-gated — the page was already
+  //     admitted). Deny-all default: an empty/missing .dsh/allowlist.txt
+  //     admits nothing (the documented escape is config `allowlist: 'off'`).
+  if (!hitFree && config.allowlist === 'on') {
+    checkAllowlist(url, loadAllowlist(root))
+  }
+  //
+  // 4b. C6 budget gate: this attempt is CHARGED when it spawns (always) or
+  //     when hits cost (knob on). Exhausted → hard stop BEFORE any spawn
+  //     (D-M5.2: no override; a new mission_start continues).
   const willCharge = !hitFree || hitsCost
   if (willCharge && budgetExhausted(manifest.budget)) {
     throw new StoreError(

@@ -221,7 +221,10 @@ export function registerMissionTools(ctx: Context): () => void {
       'are stored too, so dead URLs are known, not guessed. Every receipt ' +
       'carries budget { max, spent, remaining, unit: fetch_calls }: each ' +
       'non-cached fetch attempt costs 1 call (cache hits are free), and an ' +
-      'exhausted mission fails with budget_exhausted (start a new mission).',
+      'exhausted mission fails with budget_exhausted (start a new mission). ' +
+      'Egress is gated by <cwd>/.dsh/allowlist.txt (deny-all default): a URL ' +
+      'not in the allowlist fails with allowlist_denied (no fetch, no budget ' +
+      'charge); already-stored URLs are never re-gated.',
     parameters: {
       type: 'object',
       additionalProperties: false,

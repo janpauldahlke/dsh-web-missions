@@ -114,6 +114,9 @@ check('dedupe: first-seen text wins', dl.length === 2 && dl[0].text === 'first' 
 // --- storeArtifact (fabricated pages)
 const root = join(mkdtempSync(join('/tmp', 'smoke-svc-')), 'root')
 mkdirSync(root, { recursive: true })
+// M5 5.2: permit the local fixture host — the deny-all default allowlist
+// would gate every fetch below; this suite tests fetch/cache mechanics.
+writeFileSync(join(root, '..', 'allowlist.txt'), '127.0.0.1')
 const manifest = startMission(root, { note: 'smoke' })
 const id = manifest.mission_id
 const mkPage = (over): FetchedPage => ({
@@ -306,7 +309,7 @@ process.exit(fail === 0 ? 0 : 1)
 // --- Harness B: tool level (applies the BUILT lib) -----------------------------
 const harnessB = `
 import http from 'node:http'
-import { mkdtempSync, existsSync, readdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 
@@ -342,6 +345,10 @@ for (const t of tools) byName[t.name] = t
 const started = await byName.mission_start.execute({ note: 'tool smoke', cwd: workdir }, exec())
 check('tool: mission_start', !!started.mission_id, JSON.stringify(started))
 const mid = started.mission_id
+// M5 5.2: permit the local fixture host — the deny-all default allowlist
+// would gate every fetch below; this suite tests tool wiring + cache.
+mkdirSync(join(workdir, '.dsh'), { recursive: true })
+writeFileSync(join(workdir, '.dsh', 'allowlist.txt'), '127.0.0.1')
 
 const full = await byName.mission_fetch.execute({ url: base + '/target', mission_id: mid, cwd: workdir }, exec())
 check('tool: fetch receipt ok', full.cached === false && full.page_quality === 'full' && full.chunk_count >= 1, JSON.stringify({ q: full.page_quality, c: full.chunk_count, e: full.error }))
