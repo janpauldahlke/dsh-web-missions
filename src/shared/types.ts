@@ -51,6 +51,31 @@ export interface PageFetcher {
       sessionKey?: string
     },
   ): Promise<FetchedPage>
+  /**
+   * C10 (M5 5.5): one consent attempt in the SAME host session — one
+   * browser39 invocation that restores the page, clicks the label
+   * (best-effort element click + accept-link navigation), and does the
+   * measuring refetch. Optional: fetchers without it never run consent
+   * (receipts keep consent_attempted:false).
+   */
+  consentAttempt?(
+    url: string,
+    label: string,
+    /** Matching link to navigate (real navigation → Set-Cookie), or null. */
+    linkUrl: string | null,
+    opts?: {
+      signal?: AbortSignal
+      sessionKey?: string
+    },
+  ): Promise<ConsentAttempt | null>
+}
+
+/** C10 (M5 5.5): one consent-attempt result (wraps the measuring refetch). */
+export interface ConsentAttempt {
+  /** The label matched a clickable element or a navigable link. */
+  clicked: boolean
+  /** The measuring refetch; null = the batch produced no usable fetch result. */
+  page: FetchedPage | null
 }
 
 export type PageQuality = 'full' | 'thin' | 'blocked'

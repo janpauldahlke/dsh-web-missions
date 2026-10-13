@@ -28,6 +28,7 @@ import { Browser39Fetcher, FetchError } from './fetcher.ts'
 import { readConfig } from './config.ts'
 import { runFetch } from './fetch-service.ts'
 import { LexicalEngine, FindError } from './retrieval.ts'
+import { ConsentProfilesError } from './consent.ts'
 import { runFind } from './find-service.ts'
 
 type ToolArgs = Record<string, any>
@@ -64,6 +65,9 @@ function toolErrorResult(error: unknown): ToolErrorResult {
     return { ok: false, error: `${error.code}: ${error.message}` }
   }
   if (error instanceof FindError) {
+    return { ok: false, error: `${error.code}: ${error.message}` }
+  }
+  if (error instanceof ConsentProfilesError) {
     return { ok: false, error: `${error.code}: ${error.message}` }
   }
   return { ok: false, error: error instanceof Error ? error.message : String(error) }

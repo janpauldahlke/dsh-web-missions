@@ -10,7 +10,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { FetchedPage, PageFetcher, PageQuality } from '../shared/types'
+import type { ConsentAttempt, FetchedPage, PageFetcher, PageQuality } from '../shared/types'
 import { ensureSessionDir, sessionsRoot } from './sessions.ts'
 
 /**
@@ -57,6 +57,30 @@ export const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 export const DEFAULT_THIN_THRESHOLD_CHARS = 300
 /** CMP marker scan scope: title + first N chars of content. */
 const CMP_SCAN_CHARS = 500
+
+/** A browser39 JSONL command (one line of the input file). */
+export interface B39Command {
+  id: string
+  action: string
+  [key: string]: unknown
+}
+
+/**
+ * C10 (M5 5.5): the best-effort element click. JSON.stringify embeds the
+ * label safely (no script injection). Matches trimmed text, case-insensitive,
+ * across the usual consent-widget element set.
+ */
+function clickScript(label: string): string {
+  const t = JSON.stringify(label.trim()).toLowerCase()
+  return (
+    `(function(){var t=${t};` +
+    `var els=document.querySelectorAll('a,button,input[type=submit],input[type=button],label');` +
+    `for(var i=0;i<els.length;i++){var e=els[i];` +
+    `var txt=(e.textContent||'').trim();` +
+    `if(txt.toLowerCase()===t){e.click();return 'clicked';}}` +
+    `return 'notfound';})()`
+  )
+}
 
 /** Error classes surface in the C4 receipt envelope (`<class>: <message>`). */
 export class FetchError extends Error {
@@ -175,6 +199,8 @@ interface B39ResultLine {
   error?: string
   code?: string
   retryable?: boolean
+  /** `dom_query` (and other query actions): the script's return value. */
+  result?: unknown
 }
 
 function tail(s: string, max = 200): string {
@@ -199,10 +225,99 @@ export class Browser39Fetcher implements PageFetcher {
     return this.config.persistSessions ?? true
   }
 
+  /** v0 fetch options (2.0.0 contract; `show_selectors_first` defaults true
+   *  in 2.0.0 → stub pages; we want the raw page). */
+  private static readonly FETCH_OPTIONS = {
+    include_links: true,
+    strip_nav: true,
+    show_selectors_first: false,
+  }
+
+  private fetchCommand(id: string, seq: number, url: string): B39Command {
+    return { id, action: 'fetch', v: 1, seq, url, options: Browser39Fetcher.FETCH_OPTIONS }
+  }
+
   async fetch(
     url: string,
     opts?: { signal?: AbortSignal; sessionKey?: string },
   ): Promise<FetchedPage> {
+    const lines = await this.runBatch([this.fetchCommand('f1', 1, url)], opts)
+    const line = lines.get('f1')
+    if (!line) throw new FetchError('fetch_failed', 'browser39 returned no result line')
+    if (line.ok === false) {
+      throw new FetchError(
+        'fetch_failed',
+        `browser39 rejected fetch: ${line.error ?? 'unknown error'} (code: ${line.code ?? 'unknown'})`,
+      )
+    }
+    if (line.ok !== true) {
+      throw new FetchError('fetch_failed', 'malformed browser39 result line (no ok flag)')
+    }
+    return this.toFetchedPage(url, line)
+  }
+
+  /**
+   * C10 (M5 5.5): one consent attempt in the SAME host session — ONE
+   * browser39 invocation (a batch), so cookies land and stick within the
+   * call and flush to the on-disk session on SIGTERM:
+   *
+   *   c1  fetch(url)                 restore the page (a fresh process has
+   *                                  no DOM; the click script needs one)
+   *   c2  dom_query(clickScript)     best-effort element `.click()` — a
+   *                                  no-op on 2.0.0 page handlers, kept for
+   *                                  transports that honor it
+   *   c3  fetch(linkUrl)  [if any]   the WORKING path: navigating a link whose
+   *                                  text matches the label is a real
+   *                                  navigation — Set-Cookie lands
+   *   f1  fetch(url)                 the measuring refetch (the line we wait for)
+   *
+   * null = the batch failed (spawn/timeout/abort) — the caller counts the
+   * attempt and continues.
+   */
+  async consentAttempt(
+    url: string,
+    label: string,
+    linkUrl: string | null,
+    opts?: { signal?: AbortSignal; sessionKey?: string },
+  ): Promise<ConsentAttempt | null> {
+    const commands: B39Command[] = [
+      this.fetchCommand('c1', 1, url),
+      { id: 'c2', action: 'dom_query', v: 1, seq: 2, script: clickScript(label) },
+    ]
+    if (linkUrl !== null) commands.push(this.fetchCommand('c3', 3, linkUrl))
+    commands.push(this.fetchCommand('f1', commands.length + 1, url))
+
+    let lines: Map<string, B39ResultLine>
+    try {
+      lines = await this.runBatch(commands, opts)
+    } catch {
+      // batch failed (spawn/timeout/abort) — counted by the tactic
+      return null
+    }
+
+    const refetch = lines.get('f1')
+    if (!refetch || refetch.ok !== true) return { clicked: linkUrl !== null, page: null }
+
+    const clickLine = lines.get('c2')
+    const elementClicked = clickLine?.ok === true && String(clickLine.result ?? '') === 'clicked'
+    return {
+      clicked: elementClicked || linkUrl !== null,
+      page: this.toFetchedPage(url, refetch),
+    }
+  }
+
+  /**
+   * One managed `watch` process per batch (D-M5.9): write the command
+   * line(s) BEFORE spawn (watch processes pre-existing lines at startup —
+   * no startup race), spawn `browser39 watch <in> --output <out>`, poll the
+   * output file until the LAST command's result line appears, then SIGTERM
+   * the group (flush the session save) → SIGKILL after a grace → resolve
+   * with all result lines (id → line). The deadline covers the whole call.
+   */
+  private async runBatch(
+    commands: B39Command[],
+    opts?: { signal?: AbortSignal; sessionKey?: string },
+  ): Promise<Map<string, B39ResultLine>> {
     const bin = resolveBrowser39Bin(this.config.browser39Bin)
     if (!bin) {
       throw new FetchError(
@@ -222,56 +337,31 @@ export class Browser39Fetcher implements PageFetcher {
     const inPath = join(workdir, 'commands.jsonl')
     const outPath = join(workdir, 'results.jsonl')
     try {
-      // Written BEFORE spawn: `watch` processes pre-existing lines at
-      // startup (no startup race). browser39 APPENDS results — start clean.
-      writeFileSync(
-        inPath,
-        `${JSON.stringify({
-          id: 'f1',
-          action: 'fetch',
-          v: 1,
-          seq: 1,
-          url,
-          options: {
-            include_links: true,
-            strip_nav: true,
-            // 2.0.0 defaults show_selectors_first=true (stub pages); we want the raw page.
-            show_selectors_first: false,
-          },
-        })}\n`,
-      )
+      writeFileSync(inPath, commands.map((c) => JSON.stringify(c)).join('\n') + '\n')
       writeFileSync(outPath, '')
-
-      const line = await this.spawnWatch(bin, inPath, outPath, sessionConfig, opts?.signal)
-
-      if (line.ok === false) {
-        throw new FetchError(
-          'fetch_failed',
-          `browser39 rejected fetch: ${line.error ?? 'unknown error'} (code: ${line.code ?? 'unknown'})`,
-        )
-      }
-      if (line.ok !== true) {
-        throw new FetchError('fetch_failed', 'malformed browser39 result line (no ok flag)')
-      }
-      return this.toFetchedPage(url, line)
+      return await this.spawnWatch(
+        bin,
+        inPath,
+        outPath,
+        sessionConfig,
+        commands[commands.length - 1].id,
+        commands.length > 1,
+        opts?.signal,
+      )
     } finally {
       rmSync(workdir, { recursive: true, force: true })
     }
   }
 
-  /**
-   * One managed `watch` process (D-M5.9): spawn with the command line(s)
-   * already in place, poll the output file for the `f1` result line, then
-   * SIGTERM the group (flush the session save) → SIGKILL after a grace →
-   * resolve with the result. The deadline covers the whole call.
-   */
   private spawnWatch(
     bin: Browser39Bin,
     inPath: string,
     outPath: string,
     sessionConfig: string | null,
+    waitId: string,
+    isBatch: boolean,
     signal?: AbortSignal,
-  ): Promise<B39ResultLine> {
+  ): Promise<Map<string, B39ResultLine>> {
     return new Promise((resolve, reject) => {
       let child: ReturnType<typeof spawn>
       try {
@@ -299,14 +389,17 @@ export class Browser39Fetcher implements PageFetcher {
       let deadlineTimer: ReturnType<typeof setTimeout> | null = null
       let shutdownStarted = false
 
-      const finish = (err: Error | null, line?: B39ResultLine): void => {
+      const finish = (
+        err: Error | null,
+        lines?: Map<string, B39ResultLine>,
+      ): void => {
         if (settled) return
         settled = true
         if (pollTimer !== null) clearInterval(pollTimer)
         if (deadlineTimer !== null) clearTimeout(deadlineTimer)
         signal?.removeEventListener('abort', onAbort)
         if (err) reject(err)
-        else resolve(line as B39ResultLine)
+        else resolve(lines as Map<string, B39ResultLine>)
       }
 
       // Graceful shutdown: SIGTERM the group (browser39 flushes the session
@@ -318,25 +411,26 @@ export class Browser39Fetcher implements PageFetcher {
         setTimeout(() => this.killGroup(child, 'SIGKILL'), WATCH_SHUTDOWN_GRACE_MS).unref()
       }
 
-      // Poll the appended result file for our line (id `f1`).
-      const readResult = (): B39ResultLine | undefined => {
+      // Poll the appended result file until the LAST command's result line
+      // (id `waitId`) has fully landed; return every parsed line (id → line).
+      const readResults = (): Map<string, B39ResultLine> | undefined => {
         let raw: string
         try {
           raw = readFileSync(outPath, 'utf8')
         } catch {
           return undefined
         }
-        const lines = raw.split('\n')
-        for (let i = lines.length - 1; i >= 0; i--) {
-          if (lines[i].trim() === '') continue
+        const map = new Map<string, B39ResultLine>()
+        for (const phys of raw.split('\n')) {
+          if (phys.trim() === '') continue
           try {
-            const l = JSON.parse(lines[i]) as B39ResultLine
-            if (l.id === 'f1') return l
+            const l = JSON.parse(phys) as B39ResultLine
+            if (typeof l.id === 'string') map.set(l.id, l)
           } catch {
             // partial line still being written — keep polling
           }
         }
-        return undefined
+        return map.has(waitId) ? map : undefined
       }
 
       const onAbort = (): void => {
@@ -350,16 +444,16 @@ export class Browser39Fetcher implements PageFetcher {
         finish(
           new FetchError(
             'fetch_failed',
-            `browser39 fetch timed out after ${this.timeoutMs} ms`,
+            `browser39 ${isBatch ? 'consent batch' : 'fetch'} timed out after ${this.timeoutMs} ms`,
           ),
         )
       }, this.timeoutMs)
 
       pollTimer = setInterval(() => {
-        const line = readResult()
-        if (line) {
+        const lines = readResults()
+        if (lines) {
           beginShutdown()
-          finish(null, line)
+          finish(null, lines)
         }
       }, RESULT_POLL_MS)
 
@@ -378,9 +472,9 @@ export class Browser39Fetcher implements PageFetcher {
       })
       child.on('close', (code) => {
         // Early exit (e.g. invalid config): settle with what the file holds.
-        const line = readResult()
-        if (line) {
-          finish(null, line)
+        const lines = readResults()
+        if (lines) {
+          finish(null, lines)
           return
         }
         finish(

@@ -44,12 +44,37 @@
  * - rows + fresh receipts carry `depth` + `parent_artifact_id`; hit receipts
  *   carry the stored values (M2-era rows → 0/null).
  *
- * Errors propagate as StoreError / FetchError; the tool layer renders
- * `{ ok: false, error: '<code>: <msg>' }`.
+ * M5 (5.5 consent v0, C10):
+ * - a FRESH fetch that comes back `thin` with a CMP marker signal runs the
+ *   TACTICS seam (v0 = LabelClickTactic) in the SAME host session: per merged
+ *   accept label (profile asset ∪ override ∪ generic, up to consentMaxAttempts)
+ *   one browser39 batch tries to accept + measuring refetch; the longest
+ *   result wins and is stored.
+ * - budget (D-M5.5): the fetch was already charged pre-spawn; consent adds
+ *   batch invocations only, never budget.
+ * - consent link egress is allowlist-gated (it is egress); the depth fence
+ *   does NOT apply — a consent navigation is part of the fetch of the
+ *   requested URL, not a crawl step (nothing is stored at the link's URL).
+ * - profiles: `.dsh/web-missions/consent_profiles.toml` override (fail-loud
+ *   `consent_profiles_invalid`) → shipped asset → code defaults.
+ * - receipts carry `consent_attempted` / `consent_improved`; a thin/blocked
+ *   receipt after a failed consent attempt gets the do-not-claim hint (the
+ *   5.6 honesty gate generalizes this).
+ *
+ * Errors propagate as StoreError / FetchError / ConsentProfilesError; the
+ * tool layer renders `{ ok: false, error: '<code>: <msg>' }`.
  */
 import type { FetchedPage, PageFetcher } from '../shared/types.ts'
 import { PREVIEW_HEAD_CHARS, readArtifact, storeArtifact, type StoredArtifact } from './artifacts.ts'
-import { checkAllowlist, loadAllowlist } from './allowlist.ts'
+import { checkAllowlist, isAllowed, loadAllowlist } from './allowlist.ts'
+import {
+  consentNextStepHint,
+  isConsentWall,
+  labelsForHost,
+  loadConsentProfiles,
+  runConsent,
+  type ConsentOutcome,
+} from './consent.ts'
 import { readConfig } from './config.ts'
 import { checkDepthFence, type FenceCheck } from './depth-fence.ts'
 import { normalizeUrl } from './normalize.ts'
@@ -216,9 +241,11 @@ export async function runFetch(
 
   // 4a. Allowlist (M5 5.2, egress control): deny-all default — an
   //     empty/missing .dsh/allowlist.txt admits nothing (the documented
-  //     escape is config `allowlist: 'off'`).
-  if (config.allowlist === 'on') {
-    checkAllowlist(url, loadAllowlist(root))
+  //     escape is config `allowlist: 'off'`). Loaded once: the consent hook
+  //     (5b) reuses it to admit consent-link navigation.
+  const allowlist = config.allowlist === 'on' ? loadAllowlist(root) : null
+  if (allowlist) {
+    checkAllowlist(url, allowlist)
   }
   //
   // 4b. Depth fence (M5 5.3, D-M5.7/D-M5.8, crawl boundary): max link-hops
@@ -240,7 +267,32 @@ export async function runFetch(
   manifest = chargeBudget(root, missionId)
 
   // 5. fetch (timeout / spawn failures surface as FetchError fetch_failed / spawn_failed)
-  const page = await fetcher.fetch(url, { sessionKey: hostSessionKey(url) })
+  let page = await fetcher.fetch(url, { sessionKey: hostSessionKey(url) })
+
+  // 5b. M5 5.5 (C10, consent v0): thin + CMP marker → TACTICS in the same
+  //     host session (the fetch above was already charged — consent adds
+  //     batch invocations only, D-M5.5). A malformed profiles override
+  //     fails loud here (consent_profiles_invalid), before anything is
+  //     stored — config/allowlist discipline.
+  let consentOutcome: ConsentOutcome | null = null
+  if (isConsentWall(page) && config.consentMaxAttempts > 0 && typeof fetcher.consentAttempt === 'function') {
+    const host = hostSessionKey(url)
+    const profiles = loadConsentProfiles(root)
+    const res = await runConsent(page, {
+      host,
+      url,
+      labels: labelsForHost(profiles, host),
+      // consent-link egress is allowlist-gated; the fence does not apply
+      // (part of the fetch, not a crawl step).
+      links: allowlist ? page.links.filter((l) => isAllowed(l.url, allowlist)) : page.links,
+      thinThreshold: config.thinThresholdChars,
+      maxAttempts: config.consentMaxAttempts,
+      attempt: (label, linkUrl) =>
+        fetcher.consentAttempt!(url, label, linkUrl, { sessionKey: host }),
+    })
+    page = res.page
+    consentOutcome = res.outcome
+  }
 
   // 6. ledger target (D-M3.2: one row per normalized URL per mission)
   //    - a row already exists for the FINAL key (redirect-collapse onto a
@@ -315,7 +367,8 @@ export async function runFetch(
     parent_artifact_id: fence.parent_artifact_id,
     budget: budgetView(manifest.budget),
     visited_count: updated.fetched.length,
-    next_step_hint: nextStepHint(page.quality),
+    next_step_hint:
+      consentOutcome?.attempted ? consentNextStepHint(page, consentOutcome) : nextStepHint(page.quality),
     sample_links: stored.links.slice(0, 5).map((l) => l.url),
     ...(hintFindFirst ? { hint_find_first: hintFindFirst } : {}),
   }

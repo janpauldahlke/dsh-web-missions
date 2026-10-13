@@ -1,0 +1,52 @@
+# dsh-local-web-missions — consent profiles (C10, M5 5.5)
+#
+# Accept-label vocabulary for deterministic consent-banner handling.
+# When a fresh fetch comes back `thin` with a CMP marker, the host runs the
+# consent tactic: for each label (up to config `consentMaxAttempts`), ONE
+# browser39 invocation tries to accept (element click + accept-link
+# navigation, same host session) and re-fetches the page, keeping the
+# longest result. Consent adds batch invocations, never budget (D-M5.5).
+#
+# This file is the SHIPPED asset. To customize for a mission, copy it to
+# `.dsh/web-missions/consent_profiles.toml` (the mission root) — the override
+# REPLACES this file wholesale (no merge).
+#
+# Grammar (v0 subset — anything else is consent_profiles_invalid, fail-loud):
+#   generic = [ "label", ... ]              # tried for every host
+#   [[hosts]]                               # one table per host
+#   host = "example.de"                     # hostname, matched case-insensitively
+#   acceptLabels = [ "Accept all", ... ]    # host labels, tried before generic
+#
+# Matching is case-insensitive on the trimmed element/link text.
+
+generic = [
+  "Accept all",
+  "Alle akzeptieren",
+  "Zustimmen",
+  "Akzeptieren",
+  "Allow all",
+  "I agree",
+  "Yes, I agree",
+  "Agree",
+  "Einverstanden",
+]
+
+[[hosts]]
+host = "kicker.de"
+acceptLabels = ["Alle akzeptieren", "Accept all", "Zustimmen", "Akzeptieren"]
+
+[[hosts]]
+host = "gamestar.de"
+acceptLabels = ["Alle akzeptieren", "Accept all", "Zustimmen", "I agree"]
+
+[[hosts]]
+host = "bbc.com"
+acceptLabels = ["Yes, I agree", "Allow all", "Accept"]
+
+[[hosts]]
+host = "spiegel.de"
+acceptLabels = ["Alle akzeptieren", "Akzeptieren", "Zustimmen"]
+
+[[hosts]]
+host = "taz.de"
+acceptLabels = ["Alle akzeptieren", "Akzeptieren", "Zustimmen"]
