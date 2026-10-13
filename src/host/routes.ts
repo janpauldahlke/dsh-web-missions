@@ -3,6 +3,10 @@
  *
  * - GET /api/web-missions/missions        → mission_list()
  * - GET /api/web-missions/missions/:id    → mission_status({ mission_id })
+ * - POST /api/web-missions/missions/:id/stop → mission_stop (M6 6.1, D-M6.3)
+ * - POST /api/web-missions/recents/clear   → clear recents (M6 6.1, D7)
+ * - POST /api/web-missions/clear-all       → wipe missions + sessions (M6 6.1, D-M6.2)
+ * - GET /api/web-missions/sessions         → session visibility (M6 6.1, D-M6.4)
  *
  * Routes have no agent session, so the mission root resolves from the server
  * process cwd (acceptance server booted in this repo — D6). That is the one
@@ -16,13 +20,20 @@ import {
   MISSIONS_ID_PREFIX,
   MISSIONS_ROUTE,
   MISSION_ID_PATTERN,
+  RECENTS_CLEAR_ROUTE,
+  CLEAR_ALL_ROUTE,
+  SESSIONS_ROUTE,
 } from '../shared/types.ts'
 import {
   StoreError,
   listMissions,
   missionRoot,
   missionStatus,
+  stopMission,
+  clearRecents,
+  clearAll,
 } from './store.ts'
+import { sessionViews } from './sessions-view.ts'
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -48,6 +59,38 @@ function httpStatusFor(error: unknown): number {
     return 500
   }
   return 500
+}
+
+/**
+ * Collect + parse a small JSON request body. Empty body → `null` (stop
+ * without a reason); non-JSON → throws (the handler maps it to 400).
+ */
+function readJsonBody(req: IncomingMessage, limit = 64 * 1024): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let size = 0
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > limit) {
+        reject(new Error('body too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => {
+      if (chunks.length === 0) {
+        resolve(null)
+        return
+      }
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      } catch {
+        reject(new Error('invalid JSON body'))
+      }
+    })
+    req.on('error', reject)
+  })
 }
 
 export function registerMissionsRoutes(ctx: Context): void {
@@ -76,30 +119,99 @@ export function registerMissionsRoutes(ctx: Context): void {
 
   // Prefix without trailing slash: matches the bare path (exact route wins for
   // that URL) and `<prefix>/<anything>`. See MISSIONS_ID_PREFIX doc.
+  // Owns GET …/:id (status) and POST …/:id/stop (D-M6.3 — thin wrapper over
+  // mission_stop; the webserver has no pattern routes, so the suffix is
+  // matched here, not as a separate registration).
+  const stopSuffix = new RegExp(`^(${MISSION_ID_PATTERN.source.slice(1, -1)})\\/stop$`)
   const unregisterStatus = ctx.webServer.register({
     kind: 'prefix',
     path: MISSIONS_ID_PREFIX,
     handler: (req: IncomingMessage, res: ServerResponse) => {
-      if (req.method !== 'GET') {
+      void (async () => {
+        const host = req.headers.host ?? '127.0.0.1'
+        const url = new URL(req.url ?? MISSIONS_ID_PREFIX, `http://${host}`)
+        if (url.pathname === MISSIONS_ID_PREFIX) {
+          if (req.method !== 'GET') {
+            send(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          // Bare prefix (no id) — the exact list route owns this URL; defensive 404.
+          send(res, 404, { ok: false, error: 'not found' })
+          return
+        }
+        // Strip the separator; the remainder is `<id>` or `<id>/stop`.
+        const remainder = url.pathname.slice(MISSIONS_ID_PREFIX.length + 1)
+        if (req.method === 'POST') {
+          const match = remainder.match(stopSuffix)
+          if (!match) {
+            sendError(res, 404, 'unknown_mission', `no such mission: ${remainder}`)
+            return
+          }
+          const stopId = match[1]
+          // Optional { reason } body — malformed/absent bodies stop with no
+          // reason (the stop footer says "no reason given"), not an error.
+          let reason: string | undefined
+          try {
+            const body = await readJsonBody(req)
+            if (body !== null && typeof body === 'object' && 'reason' in body) {
+              const r = (body as { reason: unknown }).reason
+              if (typeof r === 'string' && r.trim() !== '') reason = r.trim()
+            }
+          } catch {
+            /* no usable body → stop without a reason */
+          }
+          try {
+            const { manifest, already_stopped } = stopMission(root, stopId, reason)
+            send(res, 200, {
+              ok: true,
+              mission_id: manifest.mission_id,
+              status: manifest.status,
+              stop_reason: manifest.stop_reason ?? null,
+              already_stopped,
+              updated_at: manifest.updated_at,
+            })
+          } catch (error) {
+            if (error instanceof StoreError) {
+              sendError(res, httpStatusFor(error), error.code, errorMessage(error))
+            } else {
+              send(res, 500, { ok: false, error: errorMessage(error) })
+            }
+          }
+          return
+        }
+        if (req.method !== 'GET') {
+          send(res, 405, { ok: false, error: 'method not allowed' })
+          return
+        }
+        if (!MISSION_ID_PATTERN.test(remainder)) {
+          sendError(res, 404, 'unknown_mission', `no such mission: ${remainder}`)
+          return
+        }
+        try {
+          send(res, 200, missionStatus(root, remainder))
+        } catch (error) {
+          if (error instanceof StoreError) {
+            sendError(res, httpStatusFor(error), error.code, errorMessage(error))
+          } else {
+            send(res, 500, { ok: false, error: errorMessage(error) })
+          }
+        }
+      })()
+    },
+  })
+  ctx.effect(() => unregisterStatus, 'web-missions: /api/web-missions/missions/:id route')
+
+  // M6 6.1 (D7) — Clear recents: empty the index, keep the mission dirs.
+  const unregisterRecentsClear = ctx.webServer.register({
+    kind: 'exact',
+    path: RECENTS_CLEAR_ROUTE,
+    handler: (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'POST') {
         send(res, 405, { ok: false, error: 'method not allowed' })
         return
       }
-      const host = req.headers.host ?? '127.0.0.1'
-      const url = new URL(req.url ?? MISSIONS_ID_PREFIX, `http://${host}`)
-      if (url.pathname === MISSIONS_ID_PREFIX) {
-        // Bare prefix (no id) — the exact list route owns this URL; defensive 404.
-        send(res, 404, { ok: false, error: 'not found' })
-        return
-      }
-      // Strip the separator; the remainder must be the full id (the anchored
-      // pattern rejects anything with further segments).
-      const remainder = url.pathname.slice(MISSIONS_ID_PREFIX.length + 1)
-      if (!MISSION_ID_PATTERN.test(remainder)) {
-        sendError(res, 404, 'unknown_mission', `no such mission: ${remainder}`)
-        return
-      }
       try {
-        send(res, 200, missionStatus(root, remainder))
+        send(res, 200, { ok: true, ...clearRecents(root) })
       } catch (error) {
         if (error instanceof StoreError) {
           sendError(res, httpStatusFor(error), error.code, errorMessage(error))
@@ -109,5 +221,64 @@ export function registerMissionsRoutes(ctx: Context): void {
       }
     },
   })
-  ctx.effect(() => unregisterStatus, 'web-missions: /api/web-missions/missions/:id route')
+  ctx.effect(() => unregisterRecentsClear, 'web-missions: /api/web-missions/recents/clear route')
+
+  // M6 6.1 (D-M6.2) — Clear all: missions + index + host session dirs.
+  // `confirm: true` is REQUIRED (touches ~/.dsh) — anything else is a 400.
+  const unregisterClearAll = ctx.webServer.register({
+    kind: 'exact',
+    path: CLEAR_ALL_ROUTE,
+    handler: (req: IncomingMessage, res: ServerResponse) => {
+      void (async () => {
+        if (req.method !== 'POST') {
+          send(res, 405, { ok: false, error: 'method not allowed' })
+          return
+        }
+        let body: unknown
+        try {
+          body = await readJsonBody(req)
+        } catch {
+          sendError(res, 400, 'invalid_body', 'body must be JSON')
+          return
+        }
+        if (body === null || typeof body !== 'object' || (body as { confirm?: unknown }).confirm !== true) {
+          sendError(res, 400, 'confirm_required', 'send { "confirm": true } to clear missions + sessions')
+          return
+        }
+        try {
+          send(res, 200, { ok: true, ...clearAll(root) })
+        } catch (error) {
+          if (error instanceof StoreError) {
+            sendError(res, httpStatusFor(error), error.code, errorMessage(error))
+          } else {
+            send(res, 500, { ok: false, error: errorMessage(error) })
+          }
+        }
+      })()
+    },
+  })
+  ctx.effect(() => unregisterClearAll, 'web-missions: /api/web-missions/clear-all route')
+
+  // M6 6.1 (D-M6.4) — session visibility, v0.1: hosts with session dirs +
+  // last consent outcome (read-only; never touches the session dirs).
+  const unregisterSessions = ctx.webServer.register({
+    kind: 'exact',
+    path: SESSIONS_ROUTE,
+    handler: (req: IncomingMessage, res: ServerResponse) => {
+      if (req.method !== 'GET') {
+        send(res, 405, { ok: false, error: 'method not allowed' })
+        return
+      }
+      try {
+        send(res, 200, { ok: true, sessions: sessionViews(root) })
+      } catch (error) {
+        if (error instanceof StoreError) {
+          sendError(res, httpStatusFor(error), error.code, errorMessage(error))
+        } else {
+          send(res, 500, { ok: false, error: errorMessage(error) })
+        }
+      }
+    },
+  })
+  ctx.effect(() => unregisterSessions, 'web-missions: /api/web-missions/sessions route')
 }

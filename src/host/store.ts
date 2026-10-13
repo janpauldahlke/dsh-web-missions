@@ -19,10 +19,12 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { DEFAULT_FETCH_BUDGET, readConfig } from './config.ts'
+import { clearSessionHosts, sessionsRoot } from './sessions.ts'
 import { normalizeUrl } from './normalize.ts'
 
 export { DEFAULT_FETCH_BUDGET }
@@ -89,6 +91,14 @@ export interface FetchedRow {
   artifact_id: string
   quality: string
   fetched_at: string
+  /**
+   * M6 6.1 (C10 visibility): a consent tactic ran for this page. Pairs with
+   * `consent_improved` — the pane's thin-page hint (and the /sessions route's
+   * "last consent outcome") needs BOTH, since `consent_improved:false` alone
+   * cannot tell "attempted, not improved" from "never attempted". M5-era
+   * rows predate it (read as `?? false` — same pattern as `depth`).
+   */
+  consent_attempted?: boolean
   consent_improved?: boolean
   /**
    * M5 (C6 audit): the attempt that wrote/refreshed this row was charged
@@ -436,4 +446,54 @@ export function missionStatus(root: string, id?: string): StatusResult {
   const manifest = readManifest(root, resolved)
   if (!manifest) throw new StoreError('unknown_mission', `no such mission: ${resolved}`)
   return { ...manifest, budget: budgetView(manifest.budget), visited: manifest.fetched }
+}
+
+// --- M6 6.1 — pane hygiene ops (D7; D-M6.2) ------------------------------------
+
+/** Mission ids present on disk (dirs matching the id pattern; sorted). */
+export function listMissionIds(root: string): string[] {
+  let entries
+  try {
+    entries = readdirSync(root, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  return entries
+    .filter((e) => e.isDirectory() && /^m-[0-9a-f]{8}$/.test(e.name))
+    .map((e) => e.name)
+    .sort()
+}
+
+export interface RecentsClearedResult {
+  cleared: number
+}
+
+/**
+ * "Clear recents" (D7): empty the index (forget the list) — mission dirs and
+ * their data are kept. Returns how many index rows were dropped.
+ */
+export function clearRecents(root: string): RecentsClearedResult {
+  const rows = readIndex(root)
+  writeIndex(root, [])
+  return { cleared: rows.length }
+}
+
+export interface ClearAllResult {
+  missions: number
+  index_rows: number
+  session_hosts: number
+}
+
+/**
+ * "Clear all" (D-M6.2): delete every mission dir + the index + every host
+ * session dir (C7 — `BROWSER39_SESSIONS_DIR` / `~/.dsh/browser39/sessions/`).
+ * Returns counts for the receipt. Root dirs themselves are kept.
+ */
+export function clearAll(root: string): ClearAllResult {
+  const indexRows = readIndex(root).length
+  const ids = listMissionIds(root)
+  for (const id of ids) rmSync(missionDir(root, id), { recursive: true, force: true })
+  rmSync(indexPath(root), { force: true })
+  const sessionHosts = clearSessionHosts(sessionsRoot())
+  return { missions: ids.length, index_rows: indexRows, session_hosts: sessionHosts }
 }

@@ -328,6 +328,9 @@ export async function runFetch(
     artifact_id: stored.artifactId,
     quality: page.quality,
     fetched_at: page.fetchedAt,
+    // M6 6.1: the pane's thin-page hint needs attempted AND improved (the
+    // receipt has both; the ledger row now carries both too).
+    consent_attempted: page.consentAttempted,
     consent_improved: page.consentImproved,
     requested_keys: requestedKeys,
     // C6 audit: a ledger row is only ever written by a charged (non-cached)

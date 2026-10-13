@@ -28,6 +28,11 @@ export const TAB_ID = 'web-missions'
 export const TAB_KIND = 'web-missions'
 export const TAB_TITLE = 'Missions'
 
+/** M6 pane routes (D-M6.2/D-M6.3/D-M6.4 — hygiene, stop, session visibility). */
+export const RECENTS_CLEAR_ROUTE = '/api/web-missions/recents/clear'
+export const CLEAR_ALL_ROUTE = '/api/web-missions/clear-all'
+export const SESSIONS_ROUTE = '/api/web-missions/sessions'
+
 /** One-shot health payload the client pane renders (host ↔ UI loop proof). */
 export interface HealthPayload {
   ok: boolean

@@ -32,7 +32,14 @@
  * file ONLY if absent and never rewrite it. `BROWSER39_SESSIONS_DIR` env
  * overrides the root (test escape hatch, BROWSER39_BIN-style pattern).
  */
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -81,4 +88,60 @@ export function ensureSessionDir(sessionKey: string, root = sessionsRoot()): str
     writeFileSync(cfg, renderSessionConfig(dir))
   }
   return cfg
+}
+
+// --- M6 6.1 — session visibility + wipe (C7; the pane's session data) ---------
+
+/**
+ * Hosts that have a session directory under `root` (sorted). Missing root →
+ * `[]` (never throws — the pane polls this with no missions ever run).
+ */
+export function listSessionHosts(root: string = sessionsRoot()): string[] {
+  let entries
+  try {
+    entries = readdirSync(root, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  return entries
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort()
+}
+
+/**
+ * Delete every host session directory under `root` (M6 "Clear all", D-M6.2).
+ * Returns how many host dirs were removed. The root itself is kept.
+ */
+export function clearSessionHosts(root: string = sessionsRoot()): number {
+  let removed = 0
+  for (const host of listSessionHosts(root)) {
+    rmSync(sessionDirFor(root, host), { recursive: true, force: true })
+    removed += 1
+  }
+  return removed
+}
+
+/**
+ * ISO mtime of the newest file inside a host session dir (the dir may hold
+ * config.toml + session.enc; anything newer wins). `null` when unreadable or
+ * empty — the pane renders an unknown age rather than failing.
+ */
+export function sessionLastModified(dir: string): string | null {
+  let entries
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return null
+  }
+  let newest: string | null = null
+  for (const name of entries) {
+    try {
+      const mtime = statSync(join(dir, name)).mtime.toISOString()
+      if (newest === null || mtime > newest) newest = mtime
+    } catch {
+      /* vanished mid-scan */
+    }
+  }
+  return newest
 }
