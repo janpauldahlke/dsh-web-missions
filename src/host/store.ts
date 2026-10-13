@@ -184,6 +184,56 @@ export interface StatusResult extends Omit<Manifest, 'budget'> {
   /** C6: the manifest budget with the derived `remaining` (every status shows it). */
   budget: BudgetView
   visited: FetchedRow[]
+  /**
+   * M7 (D-M7.4): the companion's discovery file, surfaced one-way
+   * (dsh-local-web-discovery WRITES `<mission>/discovery.json`, the core only
+   * reads it — the entire M7 core surface; V5 encapsulation). Discovered URLs
+   * are NOT ledger rows: they enter `visited` only when the core fetches
+   * them, through the allowlist gate. Absent = nothing discovered yet
+   * (common case — the field is simply omitted).
+   */
+  discovery?: DiscoverySurface
+}
+
+/** M7: one discovered URL as written by the companion (shape owned there;
+ *  the core validates minimally and surfaces it verbatim). */
+export interface DiscoveryUrlEntry {
+  url: string
+  title?: string
+  snippet?: string
+  via?: { query?: string; engine?: string; at?: string }
+}
+
+export interface DiscoverySurface {
+  updated_at: string
+  urls: DiscoveryUrlEntry[]
+}
+
+const DISCOVERY_FILENAME = 'discovery.json'
+
+/** Read a mission's discovery file: `null` when absent. Corrupt JSON or a
+ *  wrong shape → StoreError('corrupt') — fail loud like the core's own files
+ *  (discovery.json is operator-facing data, never silently dropped). */
+export function readDiscoverySurface(root: string, id: string): DiscoverySurface | null {
+  assertSafeId(id, 'mission')
+  const parsed = readJsonFile<unknown>(join(missionDir(root, id), DISCOVERY_FILENAME))
+  if (parsed === null) return null
+  const file = parsed as DiscoverySurface
+  if (
+    file === null ||
+    typeof file !== 'object' ||
+    Array.isArray(file) ||
+    typeof file.updated_at !== 'string' ||
+    !Array.isArray(file.urls)
+  ) {
+    throw new StoreError('corrupt', `${DISCOVERY_FILENAME} in ${id} has a bad shape (need {updated_at: string, urls: [...]})`)
+  }
+  for (const entry of file.urls) {
+    if (entry === null || typeof entry !== 'object' || typeof entry.url !== 'string') {
+      throw new StoreError('corrupt', `${DISCOVERY_FILENAME} in ${id} has a bad urls[] entry (need {url: string, …})`)
+    }
+  }
+  return file
 }
 
 export interface StopResult {
@@ -450,7 +500,14 @@ export function missionStatus(root: string, id?: string): StatusResult {
   const resolved = resolveMissionId(root, id)
   const manifest = readManifest(root, resolved)
   if (!manifest) throw new StoreError('unknown_mission', `no such mission: ${resolved}`)
-  return { ...manifest, budget: budgetView(manifest.budget), visited: manifest.fetched }
+  const discovery = readDiscoverySurface(root, resolved)
+  return {
+    ...manifest,
+    budget: budgetView(manifest.budget),
+    visited: manifest.fetched,
+    // M7: surfaced only when present (field omitted = nothing discovered).
+    ...(discovery ? { discovery } : {}),
+  }
 }
 
 // --- M6 6.1 — pane hygiene ops (D7; D-M6.2) ------------------------------------

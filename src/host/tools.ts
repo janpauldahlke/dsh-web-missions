@@ -180,7 +180,9 @@ export function registerMissionTools(ctx: Context): () => void {
       'Return the full manifest of the default (most recently started active) ' +
       'mission, or the given mission_id, including visited: the ledger of ' +
       'fetched pages. This is the canonical visited list — do not track ' +
-      'visited URLs from memory.',
+      'visited URLs from memory. An optional discovery field (M7 companion) ' +
+      'lists candidate URLs recorded by discovery_search — candidates only, ' +
+      'not fetched or visited until mission_fetch runs (allowlist-gated).',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -204,6 +206,9 @@ export function registerMissionTools(ctx: Context): () => void {
           created_at: { type: 'string' },
           updated_at: { type: 'string' },
           visited: { type: 'array' },
+          // M7: optional — present only when the companion has recorded
+          // discoveries for this mission ({updated_at, urls[{url,title?,snippet?,via?}]}).
+          discovery: { type: 'object' },
         },
       },
       render: renderJson,
