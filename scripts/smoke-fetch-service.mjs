@@ -325,7 +325,7 @@ const ctx = {
 }
 lib.apply(ctx)
 const names = tools.map((t) => t.name)
-check('tools: 5 registered', names.length === 5, JSON.stringify(names))
+check('tools: 6 registered (M4 adds mission_find)', names.length === 6, JSON.stringify(names))
 check('tools: mission_fetch present', names.includes('mission_fetch'), JSON.stringify(names))
 const find = (n) => tools.find((t) => t.name === n)
 

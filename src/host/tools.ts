@@ -1,6 +1,6 @@
 /**
  * Agent tools for web missions (M1: mission_start, mission_list,
- * mission_status, mission_stop; M2: mission_fetch).
+ * mission_status, mission_stop; M2: mission_fetch; M4: mission_find).
  *
  * Registers plain tool definition objects on the harness `tools` service —
  * proven exemplar: `dsh-local-long-horizon/src/host/tools.ts` (do not invent
@@ -26,6 +26,8 @@ import {
 } from './store.ts'
 import { Browser39Fetcher, FetchError } from './fetcher.ts'
 import { runFetch } from './fetch-service.ts'
+import { LexicalEngine, FindError } from './retrieval.ts'
+import { runFind } from './find-service.ts'
 
 type ToolArgs = Record<string, any>
 
@@ -58,6 +60,9 @@ function toolErrorResult(error: unknown): ToolErrorResult {
     return { ok: false, error: `${error.code}: ${error.message}` }
   }
   if (error instanceof FetchError) {
+    return { ok: false, error: `${error.code}: ${error.message}` }
+  }
+  if (error instanceof FindError) {
     return { ok: false, error: `${error.code}: ${error.message}` }
   }
   return { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -312,6 +317,81 @@ export function registerMissionTools(ctx: Context): () => void {
           updated_at: manifest.updated_at,
           already_stopped,
         }
+      } catch (error) {
+        return toolErrorResult(error)
+      }
+    },
+  }))
+
+  disposers.push(tools.register({
+    name: 'mission_find',
+    description:
+      'Lexically search a mission\'s STORED pages (chunks + link text) and return ' +
+      'scored matches with snippets, best_match_url, and matching links. This is ' +
+      'the point of the M3 cache: query what is already stored before fetching a ' +
+      'new same-host path. find never fetches — it only reads disk. ' +
+      'Pass url_only: true for the cheap "which page talks about X" shape.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['query'],
+      properties: {
+        query: { type: 'string', description: 'Natural-language search text (required). Tokens < 3 chars are dropped.' },
+        mission_id: { type: 'string', description: 'Mission id (default: most recently started active mission).' },
+        limit: { type: 'integer', description: 'Max chunk matches (default 5, max 20).' },
+        url_only: { type: 'boolean', description: 'Return only { best_match_url, link_matches} (cheap mode).' },
+        cwd: CWD_PARAM,
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          ok: { type: 'boolean' },
+          error: { type: 'string' },
+          mission_id: { type: 'string' },
+          query: { type: 'string' },
+          matches: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                artifact_id: { type: 'string' },
+                url: { type: 'string' },
+                chunk: { type: 'integer' },
+                score: { type: 'number' },
+                depth: { type: 'integer' },
+                snippet: { type: 'string' },
+              },
+            },
+          },
+          best_match_url: { type: ['string', 'null'] },
+          link_matches: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                url: { type: 'string' },
+                text: { type: 'string' },
+                score: { type: 'number' },
+              },
+            },
+          },
+          hint: { type: 'string' },
+        },
+      },
+      render: renderJson,
+    },
+    async execute(args: ToolArgs, exec: ExecLike) {
+      try {
+        const root = missionRoot(resolveCwd(args, exec))
+        return runFind(root, new LexicalEngine(), {
+          query: args.query,
+          mission_id: args.mission_id,
+          limit: args.limit,
+          urlOnly: args.url_only,
+        })
       } catch (error) {
         return toolErrorResult(error)
       }

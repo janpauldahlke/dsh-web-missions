@@ -1,4 +1,4 @@
-// Find smoke (M4 slice 4.1 — C8 port + LexicalEngine):
+// Find smoke (M4 slice 4.1–4.3 — C8 port + LexicalEngine + mission_find tool):
 //   A) service-level harness (tmpdir mission store, esbuild-bundled child):
 //      tokenize rules (unicode-aware, min len 3), empty_query FindError,
 //      tf × IDF-lite scoring (exact expected scores on a fixed 6-chunk corpus),
@@ -9,9 +9,13 @@
 //      tie-breaks (fetched_at newer first; artifact_id asc), depth read from
 //      page.json (0 default, 2 when M5-style record present), corrupt-dir skip,
 //      urlOnly ignored by the engine (full result shape always).
+//   B) tool-level harness (built lib, real mission via mission_start +
+//      on-disk artifacts): no_mission / unknown_mission / empty_query
+//      envelopes, V1 top match + snippet, V2 empty + hint, V3 determinism,
+//      V4 url_only exact shape, V5 link text matches, limit passthrough.
 // Exits non-zero on any failure.
 import { buildSync } from 'esbuild'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -172,8 +176,133 @@ console.log(fail === 0 ? 'harness A: all checks passed' : 'harness A: ' + fail +
 process.exit(fail === 0 ? 0 : 1)
 `
 
-const dirA = mkdtempSync(join(tmpdir(), 'smoke-find-a-'))
+// --- Harness B: tool level (applies the BUILT lib) -----------------------------
+const harnessB = `
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { createRequire } from 'node:module'
+
+const require2 = createRequire(import.meta.url)
+const lib = require2(${JSON.stringify(join(repoRoot, 'lib', 'index.js'))})
+
+let fail = 0
+const check = (label, cond, detail) => { if (cond) console.log('ok   ' + label) ; else { fail++; console.error('FAIL ' + label + (detail ? ' :: ' + detail : '')) } }
+
+const tools = []
+const ctx = {
+  tools: { register: (def) => { tools.push(def); return () => {} } },
+  effect: () => {},
+  inject: () => {},
+  logger: () => ({ warn: () => {}, error: () => {} }),
+}
+lib.apply(ctx)
+const names = tools.map((t) => t.name)
+check('tools: 6 registered, mission_find present', names.length === 6 && names.includes('mission_find'), JSON.stringify(names))
+const byName = {}
+for (const t of tools) byName[t.name] = t
+const exec = () => ({})
+
+// no_mission on empty cwd
+const none = await byName.mission_find.execute({ query: 'volksbank', cwd: mkdtempSync(join('/tmp', 'smoke-find-none-')) }, exec())
+check('tool: no_mission envelope', none.ok === false && none.error.startsWith('no_mission:'), JSON.stringify(none))
+
+// mission + envelopes
+const workdir = mkdtempSync(join('/tmp', 'smoke-find-tool-'))
+const started = await byName.mission_start.execute({ note: 'find tool smoke', cwd: workdir }, exec())
+check('tool: mission_start', !!started.mission_id, JSON.stringify(started))
+const mid = started.mission_id
+const bad = await byName.mission_find.execute({ query: 'volksbank', mission_id: 'm-ffffffff', cwd: workdir }, exec())
+check('tool: unknown_mission envelope', bad.ok === false && bad.error.startsWith('unknown_mission:'), JSON.stringify(bad))
+const empty = await byName.mission_find.execute({ query: '!! ab', cwd: workdir }, exec())
+check('tool: empty_query envelope', empty.ok === false && empty.error.startsWith('empty_query:'), JSON.stringify(empty))
+
+// fabricate the corpus on disk (C1 layout, stable) — 3 pages: bank, cooking, blocked
+const pagesDir = join(workdir, '.dsh', 'web-missions', mid, 'pages')
+const store = (artifactId, page, chunkText, links, withChunks = true) => {
+  const d = join(pagesDir, artifactId)
+  mkdirSync(d, { recursive: true })
+  if (withChunks) mkdirSync(join(d, 'chunks'), { recursive: true })
+  writeFileSync(join(d, 'page.json'), JSON.stringify(page, null, 2))
+  if (withChunks) writeFileSync(join(d, 'chunks', '000.md'), chunkText)
+  writeFileSync(join(d, 'links.json'), JSON.stringify(links, null, 2))
+}
+const bankContent = 'Bankenzentrale der regionalen Sparkasse, Mönckebergstraße 24 in der City von Hamburg, Telefon und Postanschrift auf der Startseite.\\n' +
+  'Geschäftsstellen im Norden und Süden der Stadt, geöffnet von Montag bis zum Freitag, Schalter, Tresor, Kasse und Beratung.\\n' +
+  'Volksbank Nord ist der Name der Bank.\\n' +
+  'Die Volksbank Nord ist eine Bank in Hamburg.\\n' +
+  'Kontakt: Volksbank Nord, Mönckebergstrasse 24.\\n' +
+  'Zinsen und Konditionen bei der Volksbank Nord.'
+const bankLinks = [
+  { url: 'http://volksbank-nord.example/konditionen', text: 'Konditionen' },
+  { url: 'http://volksbank-nord.example/ueber-uns', text: 'Über uns' },
+]
+store('p-aaaaaaaa', {
+  artifact_id: 'p-aaaaaaaa', mission_id: mid,
+  normalized_url: 'http://volksbank-nord.example/zentrale', stored_at: '2026-10-13T00:00:00.000Z',
+  url: 'http://volksbank-nord.example/zentrale', finalUrl: 'http://volksbank-nord.example/zentrale',
+  status: 200, contentType: 'text/html', title: 'Bankenzentrale', content: bankContent,
+  links: bankLinks, byteLength: bankContent.length, fetchedAt: '2026-10-10T10:00:00.000Z',
+  quality: 'full', qualitySignals: [], consentAttempted: false, consentImproved: false,
+}, bankContent, bankLinks)
+const cookContent = 'Rezept: Apfelkuchen. Den Apfel waschen und schneiden. Backen bei 180 Grad.'
+const cookLinks = [{ url: 'http://backen.example/rezepte', text: 'Rezepte' }]
+store('p-bbbbbbbb', {
+  artifact_id: 'p-bbbbbbbb', mission_id: mid,
+  normalized_url: 'http://backen.example/apfelkuchen', stored_at: '2026-10-13T00:00:00.000Z',
+  url: 'http://backen.example/apfelkuchen', finalUrl: 'http://backen.example/apfelkuchen',
+  status: 200, contentType: 'text/html', title: 'Apfelkuchen', content: cookContent,
+  links: cookLinks, byteLength: cookContent.length, fetchedAt: '2026-10-11T11:00:00.000Z',
+  quality: 'full', qualitySignals: [], consentAttempted: false, consentImproved: false,
+}, cookContent, cookLinks)
+const blockedLinks = [{ url: 'http://volksbank-nord.example/konditionen-archiv', text: 'Konditionen Archiv' }]
+store('p-cccccccc', {
+  artifact_id: 'p-cccccccc', mission_id: mid,
+  normalized_url: 'http://volksbank-nord.example/konditionen', stored_at: '2026-10-13T00:00:00.000Z',
+  url: 'http://volksbank-nord.example/konditionen', finalUrl: 'http://volksbank-nord.example/konditionen',
+  status: 404, contentType: 'text/html', title: '', content: '',
+  links: blockedLinks, byteLength: 0, fetchedAt: '2026-10-12T12:00:00.000Z',
+  quality: 'blocked', qualitySignals: ['http-404'], consentAttempted: false, consentImproved: false,
+}, '', blockedLinks, false)
+
+// V1: bank name → bank page on top
+const r1 = await byName.mission_find.execute({ query: 'volksbank nord', cwd: workdir }, exec())
+check('tool V1: top match is the bank page', r1.matches?.[0]?.url === 'http://volksbank-nord.example/zentrale', JSON.stringify(r1.matches?.[0]))
+check('tool V1: artifact id surfaced', r1.matches?.[0]?.artifact_id === 'p-aaaaaaaa', JSON.stringify(r1.matches?.[0]))
+check('tool V1: snippet contains the name', r1.matches?.[0]?.snippet.includes('Volksbank') === true, r1.matches?.[0]?.snippet)
+check('tool V1: best_match_url = bank page', r1.best_match_url === 'http://volksbank-nord.example/zentrale', r1.best_match_url)
+check('tool V1: result shape (mission_id, query, matches, link_matches)', r1.mission_id === mid && r1.query === 'volksbank nord' && Array.isArray(r1.matches) && Array.isArray(r1.link_matches))
+check('tool V1: no hint when matches exist', !('hint' in r1), JSON.stringify(Object.keys(r1)))
+
+// V2: zero overlap → empty + hint
+const r2 = await byName.mission_find.execute({ query: 'quantum flurben', cwd: workdir }, exec())
+check('tool V2: empty matches, null best', r2.matches?.length === 0 && r2.best_match_url === null, JSON.stringify(r2))
+check('tool V2: hint present, exact text', r2.hint === 'no matches: stored pages may not cover this — consider mission_fetch', r2.hint)
+
+// V3: determinism (byte-identical)
+const r3 = await byName.mission_find.execute({ query: 'volksbank nord', cwd: workdir }, exec())
+check('tool V3: byte-identical twice', JSON.stringify(r1) === JSON.stringify(r3))
+
+// V4: url_only → exactly { best_match_url, link_matches }
+const r4 = await byName.mission_find.execute({ query: 'volksbank nord', url_only: true, cwd: workdir }, exec())
+check('tool V4: url_only keys exact', JSON.stringify(Object.keys(r4).sort()) === JSON.stringify(['best_match_url', 'link_matches']), JSON.stringify(Object.keys(r4)))
+check('tool V4: url_only values (no link overlap for this query)', r4.best_match_url === 'http://volksbank-nord.example/zentrale' && Array.isArray(r4.link_matches) && r4.link_matches.length === 0, JSON.stringify(r4))
+
+// V5: link text matches
+const r5 = await byName.mission_find.execute({ query: 'konditionen', cwd: workdir }, exec())
+check('tool V5: link text matches in link_matches', r5.link_matches?.some((l) => l.text === 'Konditionen') && r5.link_matches?.some((l) => l.text === 'Konditionen Archiv'), JSON.stringify(r5.link_matches))
+
+// limit passthrough
+const r6 = await byName.mission_find.execute({ query: 'volksbank', limit: 1, cwd: workdir }, exec())
+check('tool: limit 1 → 1 match', r6.matches?.length === 1, JSON.stringify(r6.matches?.length))
+
+console.log(fail === 0 ? 'harness B: all checks passed' : 'harness B: ' + fail + ' FAILURES')
+process.exit(fail === 0 ? 0 : 1)
+`
+
+// --- run both ------------------------------------------------------------------
 let rc = 0
+
+const dirA = mkdtempSync(join(tmpdir(), 'smoke-find-a-'))
 try {
   writeFileSync(join(dirA, 'a.ts'), harnessA)
   buildSync({ entryPoints: [join(dirA, 'a.ts')], bundle: true, platform: 'node', format: 'esm', target: 'node20', outfile: join(dirA, 'a.mjs'), absWorkingDir: here })
@@ -182,4 +311,17 @@ try {
 } finally {
   rmSync(dirA, { recursive: true, force: true })
 }
+
+const dirB = join(repoRoot, '.smoke-find')
+try {
+  rmSync(dirB, { recursive: true, force: true })
+  mkdirSync(dirB, { recursive: true })
+  writeFileSync(join(dirB, 'b.ts'), harnessB)
+  buildSync({ entryPoints: [join(dirB, 'b.ts')], bundle: true, platform: 'node', format: 'esm', target: 'node20', outfile: join(dirB, 'b.mjs'), absWorkingDir: here })
+  const out = spawnSync(process.execPath, [join(dirB, 'b.mjs')], { encoding: 'utf8', stdio: ['ignore', 'inherit', 'inherit'] })
+  if (out.status !== 0) { rc = 1; console.error('harness B exit ' + out.status) }
+} finally {
+  rmSync(dirB, { recursive: true, force: true })
+}
+
 process.exit(rc)
