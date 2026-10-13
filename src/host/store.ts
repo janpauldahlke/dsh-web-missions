@@ -158,6 +158,8 @@ export interface IndexRow {
 export interface MissionSummary extends IndexRow {
   pages: number
   visited: number
+  /** M6 6.2: live budget view from the manifest (null if the manifest is gone). */
+  budget?: BudgetView | null
 }
 
 export interface StartOptions {
@@ -433,6 +435,9 @@ export function listMissions(root: string): ListResult {
       ...r,
       pages: pageCount(root, r.mission_id),
       visited: manifest?.fetched.length ?? 0,
+      // M6 6.2: the board shows budget remaining/max per active row — read
+      // from the manifest the summary already loads (no new storage).
+      budget: manifest ? budgetView(manifest.budget) : null,
     }
   }
   return {

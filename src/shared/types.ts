@@ -33,6 +33,66 @@ export const RECENTS_CLEAR_ROUTE = '/api/web-missions/recents/clear'
 export const CLEAR_ALL_ROUTE = '/api/web-missions/clear-all'
 export const SESSIONS_ROUTE = '/api/web-missions/sessions'
 
+/**
+ * M6 6.2 — pane payload types (mirror the host store shapes; the pane renders
+ * ONLY these — "no new storage, everything from M1–M5 data").
+ */
+export interface BudgetPayload {
+  max: number
+  spent: number
+  remaining: number
+  unit: string
+}
+
+export interface MissionSummaryPayload {
+  mission_id: string
+  note: string
+  status: string
+  started_at: string
+  updated_at: string
+  pages: number
+  visited: number
+  /** Live from the manifest (M6 6.2: the board shows budget per active row). */
+  budget?: BudgetPayload | null
+}
+
+export interface FetchedRowPayload {
+  normalized_url: string
+  url: string
+  artifact_id: string
+  quality: string
+  fetched_at: string
+  consent_attempted?: boolean
+  consent_improved?: boolean
+  depth?: number
+  parent_artifact_id?: string | null
+}
+
+export interface ListPayload {
+  active: MissionSummaryPayload[]
+  recents: MissionSummaryPayload[]
+}
+
+export interface StatusPayload {
+  mission_id: string
+  note: string
+  status: string
+  stop_reason?: string
+  created_at: string
+  updated_at: string
+  budget: BudgetPayload
+  visited: FetchedRowPayload[]
+}
+
+export interface StopPayload {
+  ok: boolean
+  mission_id: string
+  status: string
+  stop_reason: string | null
+  already_stopped: boolean
+  updated_at: string
+}
+
 /** One-shot health payload the client pane renders (host ↔ UI loop proof). */
 export interface HealthPayload {
   ok: boolean
