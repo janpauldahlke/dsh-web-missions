@@ -1,6 +1,6 @@
 # M_5 — ledger (budget + allowlist + sessions/consent v0)
 
-Phase: **M5** · Status: in flight — 5.6 done (see `M_5_ledger.status.md`)
+Phase: **M5** · Status: **GREEN** — 5.7 done, phase closed (see `M_5_ledger.status.md`)
 Depends on: M2 (fetch path), M3 (cache-hit receipts), M4 (skill honesty
   contract to enforce).
 
