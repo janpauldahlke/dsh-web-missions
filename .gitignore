@@ -10,8 +10,10 @@ node_modules/
 dist/
 *.log
 .DS_Store
-.tmp-m6-pane-*/   # pane smoke temp bundles (react externals must resolve upward)
-.tmp-m7-surface-*/  # M7 surface smoke temp bundles (browser39 spawn dirs)
+# pane smoke temp bundles (react externals must resolve upward)
+.tmp-m6-pane-*/
+# M7 surface smoke temp bundles (browser39 spawn dirs)
+.tmp-m7-surface-*/
 .idea/**
 
 # Session leftovers / long-horizon inject (project-local)
