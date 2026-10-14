@@ -56,6 +56,10 @@ export interface MissionSummaryPayload {
   budget?: BudgetPayload | null
   /** Per-mission depth/host fence (R2.6). */
   fence?: { maxDepth: number; maxDiscoveredHosts: number } | null
+  /** On-disk bytes for this mission (R3.1). */
+  bytes?: number
+  /** Goal pin when set (R3.2). */
+  goal?: string | null
 }
 
 export interface FetchedRowPayload {
@@ -76,6 +80,8 @@ export interface ListPayload {
   /** Store the pane is reading (R2.3 — last tool cwd or process.cwd). */
   cwd?: string
   root?: string
+  /** Total bytes under the mission root (R3.1). */
+  store_bytes?: number
 }
 
 export interface StatusPayload {
@@ -88,6 +94,18 @@ export interface StatusPayload {
   budget: BudgetPayload
   visited: FetchedRowPayload[]
   fence?: { maxDepth: number; maxDiscoveredHosts: number }
+  /** Absolute path to mission.md (operator + tools). */
+  mission_md_path?: string
+  /** Full mission.md body for the pane briefing (R3.0). */
+  briefing?: string
+  /** Selective goal pin (R3.2). */
+  goal?: string
+}
+
+/** Client helper: MISSIONS_ID_PREFIX has no trailing slash (webserver scar). */
+export function missionApiPath(missionId: string, suffix = ''): string {
+  const base = `${MISSIONS_ID_PREFIX}/${missionId}`
+  return suffix ? `${base}/${suffix}` : base
 }
 
 export interface StopPayload {

@@ -53,6 +53,10 @@ export interface MissionConfig {
   recentsCap: number
   /** Claim check: require numbers in mission.md to appear in cited pages (default true). */
   numberFormatCheck: boolean
+  /** Fence mission_read / find snippets as untrusted page text (R3.5, default true). */
+  markUntrustedText: boolean
+  /** Opt-in: drop instruction-like lines from page text (R3.5, default false). */
+  stripInstructionLike: boolean
 }
 
 export const CONFIG_FILENAME = 'config.json'
@@ -83,6 +87,8 @@ export const DEFAULT_CONFIG: MissionConfig = {
   minTokenLength: 3,
   recentsCap: 50,
   numberFormatCheck: true,
+  markUntrustedText: true,
+  stripInstructionLike: false,
 }
 
 type FieldSpec =
@@ -110,6 +116,8 @@ const FIELDS: FieldSpec[] = [
   { key: 'minTokenLength', kind: 'number' },
   { key: 'recentsCap', kind: 'number' },
   { key: 'numberFormatCheck', kind: 'boolean' },
+  { key: 'markUntrustedText', kind: 'boolean' },
+  { key: 'stripInstructionLike', kind: 'boolean' },
 ]
 
 export function configPath(root: string): string {

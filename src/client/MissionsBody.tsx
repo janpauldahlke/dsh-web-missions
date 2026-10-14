@@ -3,10 +3,10 @@
  *
  * - Board: active missions first (note, started, visited, budget), then
  *   recents (note, status, updated). Click a mission → detail.
- * - Detail: visited list (URL, quality badge full/thin/blocked, consent
- *   mark, age, artifact id), budget line, stop button (POST …/:id/stop),
- *   and the cookie/session hint line when the thin+attempted-not-improved
- *   condition holds.
+ * - Detail: briefing (mission.md), visited list, budget, mark-done
+ *   (POST …/:id/stop), cookie/session hint when thin+attempted-not-improved.
+ * - Board: mark-done on active rows (R3.0). Detail URL must use
+ *   missionApiPath (MISSIONS_ID_PREFIX has no trailing slash — V1.5 scar).
  * - Data: only the M1–M6 host routes (GET /missions, GET /missions/:id,
  *   POST /missions/:id/stop, POST /recents/clear, POST /clear-all).
  *   Initial load + refetch after actions; the board re-syncs every 15 s
@@ -21,9 +21,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import {
   CLEAR_ALL_ROUTE,
-  MISSIONS_ID_PREFIX,
   MISSIONS_ROUTE,
   RECENTS_CLEAR_ROUTE,
+  missionApiPath,
   type ClearAllPayload,
   type ListPayload,
   type MissionSummaryPayload,
@@ -35,6 +35,7 @@ import {
   budgetExhausted,
   budgetLine,
   formatAge,
+  formatBytes,
   formatTime,
   qualityBadge,
   sessionHint,
@@ -103,7 +104,7 @@ export function MissionsBody(): ReactNode {
       setDetail(null)
       setDetailError(null)
       try {
-        const data = (await fetchJson(`${MISSIONS_ID_PREFIX}${missionId}`)) as StatusPayload
+        const data = (await fetchJson(missionApiPath(missionId))) as StatusPayload
         if (token === detailToken.current) setDetail(data)
       } catch (error) {
         if (token === detailToken.current) {
@@ -114,18 +115,19 @@ export function MissionsBody(): ReactNode {
     [],
   )
 
-  const stopMission = useCallback(async () => {
-    if (view.kind !== 'detail' || stopping) return
+  /** Mark done / stop — works from detail or an active board row (R3.0). */
+  const markDone = useCallback(async (missionId: string, reason?: string) => {
+    if (stopping) return
     setStopping(true)
-    const missionId = view.missionId
     try {
-      const data = (await fetchJson(`${MISSIONS_ID_PREFIX}${missionId}/stop`, {
+      const data = (await fetchJson(missionApiPath(missionId, 'stop'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: reason ?? 'marked done from pane' }),
       })) as StopPayload
-      if (data.ok) {
+      if (data.ok && view.kind === 'detail' && view.missionId === missionId) {
         const token = ++detailToken.current
-        const refreshed = (await fetchJson(`${MISSIONS_ID_PREFIX}${missionId}`)) as StatusPayload
+        const refreshed = (await fetchJson(missionApiPath(missionId))) as StatusPayload
         if (token === detailToken.current) setDetail(refreshed)
       }
     } catch {
@@ -214,12 +216,18 @@ export function MissionsBody(): ReactNode {
       {list?.cwd && (
         <p style={styles.cwdLine} title={list.root ?? list.cwd}>
           store: {list.cwd}
+          {typeof list.store_bytes === 'number' ? ` · ${formatBytes(list.store_bytes)}` : ''}
         </p>
       )}
 
       {view.kind === 'board' ? (
         <div>
-          <Board list={list} onOpen={(id) => void openDetail(id)} />
+          <Board
+            list={list}
+            stopping={stopping}
+            onOpen={(id) => void openDetail(id)}
+            onMarkDone={(id) => void markDone(id)}
+          />
           {list !== null && (
             <Hygiene
               clearNote={clearNote}
@@ -237,7 +245,7 @@ export function MissionsBody(): ReactNode {
           hint={hint}
           stopping={stopping}
           onBack={() => setView({ kind: 'board' })}
-          onStop={() => void stopMission()}
+          onMarkDone={() => void markDone(view.missionId)}
         />
       )}
     </div>
@@ -245,7 +253,17 @@ export function MissionsBody(): ReactNode {
 }
 
 /** Presentational board (exported for the render smoke; no hooks). */
-export function Board({ list, onOpen }: { list: ListPayload | null; onOpen: (id: string) => void }): ReactNode {
+export function Board({
+  list,
+  onOpen,
+  onMarkDone,
+  stopping = false,
+}: {
+  list: ListPayload | null
+  onOpen: (id: string) => void
+  onMarkDone?: (id: string) => void
+  stopping?: boolean
+}): ReactNode {
   if (list === null) return <p style={styles.empty}>loading…</p>
   if (list.active.length === 0 && list.recents.length === 0) {
     return <p style={styles.empty}>no missions yet — start one from chat (mission_start)</p>
@@ -256,9 +274,26 @@ export function Board({ list, onOpen }: { list: ListPayload | null; onOpen: (id:
         <Section title={`active (${list.active.length})`}>
           {list.active.map((row) => (
             <Row key={row.mission_id} onClick={() => onOpen(row.mission_id)}>
-              <RowNote note={row.note} active />
+              <div style={styles.rowTop}>
+                <RowNote note={row.note} active />
+                {onMarkDone && (
+                  <button
+                    type="button"
+                    style={styles.markDoneChip}
+                    disabled={stopping}
+                    title="Mark this mission done (stop)"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onMarkDone(row.mission_id)
+                    }}
+                  >
+                    {stopping ? '…' : 'done'}
+                  </button>
+                )}
+              </div>
               <RowMeta>
                 in progress · started {formatTime(row.started_at)} · {row.visited} visited
+                {typeof row.bytes === 'number' ? ` · ${formatBytes(row.bytes)}` : ''}
                 <BudgetChip mission={row} />
                 <FenceChip mission={row} />
               </RowMeta>
@@ -270,9 +305,26 @@ export function Board({ list, onOpen }: { list: ListPayload | null; onOpen: (id:
         <Section title={`recent (${list.recents.length})`}>
           {list.recents.map((row) => (
             <Row key={row.mission_id} onClick={() => onOpen(row.mission_id)}>
-              <RowNote note={row.note} active={row.status === 'active'} />
+              <div style={styles.rowTop}>
+                <RowNote note={row.note} active={row.status === 'active'} />
+                {row.status === 'active' && onMarkDone && (
+                  <button
+                    type="button"
+                    style={styles.markDoneChip}
+                    disabled={stopping}
+                    title="Mark this mission done (stop)"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onMarkDone(row.mission_id)
+                    }}
+                  >
+                    {stopping ? '…' : 'done'}
+                  </button>
+                )}
+              </div>
               <RowMeta>
                 {row.status} · updated {formatTime(row.updated_at)} · {row.pages} pages
+                {typeof row.bytes === 'number' ? ` · ${formatBytes(row.bytes)}` : ''}
               </RowMeta>
             </Row>
           ))}
@@ -366,7 +418,7 @@ export function Detail({
   hint,
   stopping,
   onBack,
-  onStop,
+  onMarkDone,
 }: {
   missionId: string
   detail: StatusPayload | null
@@ -374,11 +426,13 @@ export function Detail({
   hint: string | null
   stopping: boolean
   onBack: () => void
-  onStop: () => void
+  onMarkDone: () => void
 }): ReactNode {
+  const briefing = detail?.briefing?.trim() ?? ''
+  const hasBriefing = briefing.length > 0
   return (
     <div>
-      <button style={styles.backButton} onClick={onBack}>
+      <button type="button" style={styles.backButton} onClick={onBack}>
         ← board
       </button>
       <div style={styles.detailHeader}>
@@ -393,6 +447,11 @@ export function Detail({
         {missionId}
         {detail?.stop_reason ? ` · stopped: ${detail.stop_reason}` : ''}
       </p>
+      {detail?.goal ? (
+        <p style={styles.goalLine} title="Pinned goal (R3.2)">
+          goal: {detail.goal}
+        </p>
+      ) : null}
 
       {error && <p style={styles.detailError}>load failed: {error}</p>}
       {detail === null && !error && <p style={styles.empty}>loading…</p>}
@@ -407,33 +466,44 @@ export function Detail({
           </p>
           {hint && <p style={styles.hint}>{hint}</p>}
           {detail.status === 'active' && (
-            <button style={styles.stopButton} onClick={onStop} disabled={stopping}>
-              {stopping ? 'stopping…' : 'stop mission'}
+            <button type="button" style={styles.stopButton} onClick={onMarkDone} disabled={stopping}>
+              {stopping ? 'marking done…' : 'mark done'}
             </button>
           )}
-          {detail.visited.length === 0 ? (
-            <p style={styles.empty}>no pages yet</p>
-          ) : (
-            <div style={styles.visitedList}>
-              {detail.visited.map((row) => {
-                const badge = qualityBadge(row.quality)
-                return (
-                  <div key={row.artifact_id} style={styles.visitedRow}>
-                    <span style={{ ...styles.qualityBadge, color: badge.color, background: badge.background }}>
-                      {badge.label}
-                    </span>
-                    <span style={styles.visitedUrl} title={row.url}>
-                      {row.url}
-                    </span>
-                    <span style={styles.visitedMeta}>
-                      {formatAge(row.fetched_at)} · <span style={styles.artifactId} title={row.artifact_id}>{shortArtifact(row.artifact_id)}</span>
-                      {row.consent_improved === true && <span style={styles.consentMark}> ✓ consent</span>}
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-          )}
+
+          <Section title="briefing">
+            {hasBriefing ? (
+              <pre style={styles.briefing}>{briefing}</pre>
+            ) : (
+              <p style={styles.empty}>no briefing yet — mission.md is empty</p>
+            )}
+          </Section>
+
+          <Section title={`pages (${detail.visited.length})`}>
+            {detail.visited.length === 0 ? (
+              <p style={styles.empty}>no pages yet</p>
+            ) : (
+              <div style={styles.visitedList}>
+                {detail.visited.map((row) => {
+                  const badge = qualityBadge(row.quality)
+                  return (
+                    <div key={row.artifact_id} style={styles.visitedRow}>
+                      <span style={{ ...styles.qualityBadge, color: badge.color, background: badge.background }}>
+                        {badge.label}
+                      </span>
+                      <span style={styles.visitedUrl} title={row.url}>
+                        {row.url}
+                      </span>
+                      <span style={styles.visitedMeta}>
+                        {formatAge(row.fetched_at)} · <span style={styles.artifactId} title={row.artifact_id}>{shortArtifact(row.artifact_id)}</span>
+                        {row.consent_improved === true && <span style={styles.consentMark}> ✓ consent</span>}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </Section>
         </>
       )}
     </div>
@@ -465,9 +535,41 @@ const styles: Record<string, CSSProperties> = {
     border: '1px solid rgba(128,128,128,0.15)',
     marginBottom: 4,
   },
-  rowNoteActive: { fontWeight: 600 },
-  rowNote: { fontWeight: 400 },
+  rowTop: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  rowNoteActive: { fontWeight: 600, flex: 1, minWidth: 0 },
+  rowNote: { fontWeight: 400, flex: 1, minWidth: 0 },
   rowMeta: { display: 'block', fontSize: 11.5, opacity: 0.7 },
+  markDoneChip: {
+    flexShrink: 0,
+    padding: '1px 8px',
+    borderRadius: 6,
+    border: '1px solid rgba(128,128,128,0.35)',
+    background: 'color-mix(in srgb, currentColor 6%, transparent)',
+    color: 'inherit',
+    cursor: 'pointer',
+    fontSize: 11,
+    lineHeight: 1.4,
+    opacity: 0.85,
+  },
+  briefing: {
+    margin: 0,
+    padding: '8px 10px',
+    borderRadius: 6,
+    border: '1px solid rgba(128,128,128,0.18)',
+    background: 'color-mix(in srgb, currentColor 4%, transparent)',
+    fontSize: 12,
+    lineHeight: 1.45,
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    maxHeight: 320,
+    overflow: 'auto',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+  },
   budgetOk: { color: '#3f6212' },
   budgetExhausted: { color: '#b91c1c', fontWeight: 600 },
   budgetLine: { margin: '0 0 8px' },
@@ -498,6 +600,15 @@ const styles: Record<string, CSSProperties> = {
     background: '#e5e5e5',
   },
   detailMeta: { margin: '2px 0 8px', fontSize: 11.5, opacity: 0.65, fontFamily: 'ui-monospace, monospace' },
+  goalLine: {
+    margin: '0 0 8px',
+    fontSize: 12,
+    opacity: 0.85,
+    padding: '4px 8px',
+    borderRadius: 6,
+    background: 'color-mix(in srgb, currentColor 5%, transparent)',
+    border: '1px solid rgba(128,128,128,0.15)',
+  },
   detailError: { color: '#f87171', fontSize: 12 },
   hint: {
     margin: '0 0 8px',

@@ -113,14 +113,19 @@ export function registerMissionTools(ctx: Context): () => void {
   safeRegister({
     name: 'mission_start',
     description:
-      'Start a web research mission (creates store + mission.md). Optional seeds are depth-0 crawl roots. ' +
+      'Start a web research mission (creates store + mission.md + goal pin). Optional seeds are depth-0 crawl roots. ' +
+      'Prefer discovery_search first when available (no memory URLs). ' +
       'when_not_to_use: do not start a second mission for the same goal — reuse the active one. ' +
-      'bad_example: mission_start for every URL. Next: mission_fetch.',
+      'bad_example: mission_start for every URL. Next: discovery_search or mission_fetch.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         note: { type: 'string', description: 'Short mission note/title (required).' },
+        goal: {
+          type: 'string',
+          description: 'Research question one-liner (defaults to note). Pinned on disk; re-read before writing the brief.',
+        },
         template_id: { type: 'string', description: 'Optional research template id.' },
         budget: { type: 'integer', description: 'Max fetch calls (default: config defaultFetchBudget).' },
         max_depth: { type: 'integer', description: 'Override maxDepth for this mission (inherits project/global config when omitted).' },
@@ -142,6 +147,7 @@ export function registerMissionTools(ctx: Context): () => void {
           error: { type: 'string' },
           mission_id: { type: 'string' },
           note: { type: 'string' },
+          goal: { type: 'string' },
           status: { type: 'string' },
           budget: { type: 'object' },
           created_at: { type: 'string' },
@@ -157,6 +163,7 @@ export function registerMissionTools(ctx: Context): () => void {
         const root = missionRoot(cwd)
         const result = startMission(root, {
           note: args.note,
+          goal: args.goal,
           template_id: args.template_id,
           budget: args.budget,
           seeds: args.seeds,
@@ -166,6 +173,9 @@ export function registerMissionTools(ctx: Context): () => void {
         return {
           ...result,
           mission_md_path: missionMdPath(root, result.mission_id),
+          goal_pin: result.goal,
+          next_step_hint:
+            'If discovery_search is available, search then pick ≤N URLs; else mission_fetch seeds. Re-read goal before writing the brief.',
         }
       } catch (error) {
         return toolErrorResult(error)
@@ -547,6 +557,11 @@ export function registerMissionTools(ctx: Context): () => void {
           already_stopped,
           claims,
           mission_md_path: missionMdPath(root, manifest.mission_id),
+          // R3.2 selective pin — remind the goal at stop / brief-finalize time only.
+          goal: manifest.goal ?? manifest.note,
+          goal_check:
+            'Confirm mission.md answers this goal before considering the mission complete: ' +
+            (manifest.goal ?? manifest.note),
         }
       } catch (error) {
         return toolErrorResult(error)

@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { readArtifact } from './artifacts.ts'
 import { readConfig } from './config.ts'
 import { StoreError, resolveMissionId } from './store.ts'
+import { prepareUntrustedPageText } from './untrusted.ts'
 
 export interface RunReadArgs {
   artifact_id: string
@@ -77,6 +78,10 @@ export function runRead(root: string, args: RunReadArgs): ReadResult {
   if (Number.isInteger(cap) && cap > 0 && text.length > cap) {
     text = text.slice(0, cap)
   }
+  text = prepareUntrustedPageText(text, {
+    markUntrustedText: config.markUntrustedText,
+    stripInstructionLike: config.stripInstructionLike,
+  })
   const more = chunkIdx + 1 < chunkCount
   return {
     mission_id: missionId,
@@ -90,7 +95,7 @@ export function runRead(root: string, args: RunReadArgs): ReadResult {
     mission_md_path: join(root, missionId, 'mission.md'),
     next_step_hint: more
       ? `append a note to mission.md citing ${artifactId}, then mission_read chunk ${chunkIdx + 1} or mission_verify`
-      : `append a note to mission.md citing ${artifactId}, then mission_verify before mission_stop`,
+      : `Re-read the Goal in mission.md, append a note citing ${artifactId}, then mission_verify before mission_stop`,
     url: stored.page.finalUrl || stored.page.url,
     title: stored.page.title ?? '',
   }

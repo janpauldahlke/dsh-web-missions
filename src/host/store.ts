@@ -20,6 +20,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
@@ -149,6 +150,11 @@ export interface Manifest {
    * status surface these for honest userland.
    */
   fence?: { maxDepth: number; maxDiscoveredHosts: number }
+  /**
+   * R3.2 selective goal pin — one-liner the model should answer. Defaults to
+   * `note` at start; echoed on status/stop (not every fetch — token tax).
+   */
+  goal?: string
 }
 
 export interface IndexRow {
@@ -168,6 +174,10 @@ export interface MissionSummary extends IndexRow {
   budget?: BudgetView | null
   /** Per-mission fence (inherit/override at start) — pane displays depth cap. */
   fence?: { maxDepth: number; maxDiscoveredHosts: number } | null
+  /** On-disk size of this mission dir in bytes (R3.1). */
+  bytes?: number
+  /** Goal pin when present on the manifest (R3.2). */
+  goal?: string | null
 }
 
 export interface StartOptions {
@@ -185,17 +195,25 @@ export interface StartOptions {
   maxDepth?: number
   /** Override project/global maxDiscoveredHosts for this mission only. */
   maxDiscoveredHosts?: number
+  /** Research question / goal one-liner (defaults to note). R3.2. */
+  goal?: string
 }
 
 export interface ListResult {
   active: MissionSummary[]
   recents: MissionSummary[]
+  /** Total bytes under the mission root (R3.1). */
+  store_bytes?: number
 }
 
 export interface StatusResult extends Omit<Manifest, 'budget'> {
   /** C6: the manifest budget with the derived `remaining` (every status shows it). */
   budget: BudgetView
   visited: FetchedRow[]
+  /** Absolute path to mission.md (pane + tools). */
+  mission_md_path: string
+  /** Full mission.md body for the pane briefing (R3.0). Absent file → empty string. */
+  briefing: string
   /**
    * M7 (D-M7.4): the companion's discovery file, surfaced one-way
    * (dsh-local-web-discovery WRITES `<mission>/discovery.json`, the core only
@@ -354,8 +372,34 @@ function pageCount(root: string, id: string): number {
 
 // --- mission.md ----------------------------------------------------------------
 
-function initialMissionMd(note: string): string {
-  return `# Mission: ${note}\n\n_status: active_\n\n## Sources\n\n`
+function initialMissionMd(note: string, goal: string): string {
+  return (
+    `# Mission: ${note}\n\n` +
+    `_status: active_\n\n` +
+    `## Goal\n\n${goal}\n\n` +
+    `## Sources\n\n`
+  )
+}
+
+/** Recursive byte size of a directory tree (files only; symlinks skipped). */
+export function dirBytes(path: string): number {
+  let total = 0
+  let entries
+  try {
+    entries = readdirSync(path, { withFileTypes: true })
+  } catch {
+    return 0
+  }
+  for (const entry of entries) {
+    const full = join(path, entry.name)
+    try {
+      if (entry.isDirectory()) total += dirBytes(full)
+      else if (entry.isFile()) total += statSync(full).size
+    } catch {
+      /* race / permission — skip */
+    }
+  }
+  return total
 }
 
 function appendStopFooter(root: string, id: string, reason: string | undefined): void {
@@ -397,11 +441,13 @@ export function startMission(root: string, opts: StartOptions): Manifest {
     throw new StoreError('bad_config', `maxDiscoveredHosts must be a non-negative integer: ${String(opts.maxDiscoveredHosts)}`)
   }
 
+  const goal = (opts.goal?.trim() || note)
   const id = newMissionId()
   const now = new Date().toISOString()
   const manifest: Manifest = {
     mission_id: id,
     note,
+    goal,
     ...(opts.template_id ? { template_id: opts.template_id } : {}),
     budget: { max: Math.floor(budget) },
     status: 'active',
@@ -415,7 +461,7 @@ export function startMission(root: string, opts: StartOptions): Manifest {
   const dir = missionDir(root, id)
   mkdirSync(join(dir, 'pages'), { recursive: true })
   writeManifest(root, manifest)
-  atomicWriteText(missionMdPath(root, id), initialMissionMd(note))
+  atomicWriteText(missionMdPath(root, id), initialMissionMd(note, goal))
 
   const row: IndexRow = {
     mission_id: id,
@@ -513,11 +559,14 @@ export function listMissions(root: string): ListResult {
       // from the manifest the summary already loads (no new storage).
       budget: manifest ? budgetView(manifest.budget) : null,
       fence: manifest?.fence ?? null,
+      bytes: dirBytes(missionDir(root, r.mission_id)),
+      goal: manifest?.goal ?? null,
     }
   }
   return {
     active: rows.filter((r) => r.status === 'active').map(sum),
     recents: rows.map(sum),
+    store_bytes: dirBytes(root),
   }
 }
 
@@ -526,10 +575,19 @@ export function missionStatus(root: string, id?: string): StatusResult {
   const manifest = readManifest(root, resolved)
   if (!manifest) throw new StoreError('unknown_mission', `no such mission: ${resolved}`)
   const discovery = readDiscoverySurface(root, resolved)
+  const mdPath = missionMdPath(root, resolved)
+  let briefing = ''
+  try {
+    briefing = readFileSync(mdPath, 'utf8')
+  } catch {
+    /* missing mission.md — still return status; pane shows empty brief */
+  }
   return {
     ...manifest,
     budget: budgetView(manifest.budget),
     visited: manifest.fetched,
+    mission_md_path: mdPath,
+    briefing,
     // M7: surfaced only when present (field omitted = nothing discovered).
     ...(discovery ? { discovery } : {}),
   }

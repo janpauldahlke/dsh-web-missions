@@ -13,7 +13,7 @@ import { Board, Detail, Hygiene } from '../src/client/MissionsBody.tsx'
 import { sessionHint } from '../src/client/paneModel.ts'
 
 export function renderBoard(list: ListPayload | null): string {
-  return renderToString(<Board list={list} onOpen={() => {}} />)
+  return renderToString(<Board list={list} onOpen={() => {}} onMarkDone={() => {}} />)
 }
 
 export function renderHygiene(clearNote: string | null, clearArmed: boolean): string {
@@ -32,7 +32,7 @@ export function renderDetail(missionId: string, detail: StatusPayload | null): s
       hint={hint}
       stopping={false}
       onBack={() => {}}
-      onStop={() => {}}
+      onMarkDone={() => {}}
     />,
   )
 }

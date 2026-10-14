@@ -220,6 +220,8 @@ const boardHtml = strip(R.renderBoard(list))
 check('render board: sections', boardHtml.includes('active (1)') && boardHtml.includes('recent (2)'), boardHtml.slice(0, 200))
 check('render board: active row (note + visited + budget remaining/max)',
   boardHtml.includes('V10 host breadth') && boardHtml.includes('3 visited') && boardHtml.includes('2/5 fetch_calls'))
+check('formatBytes: KB', m.formatBytes(2048).includes('KB'))
+check('formatBytes: MB', m.formatBytes(2 * 1024 * 1024).includes('MB'))
 check('render board: recents rows (status + updated + pages)',
   boardHtml.includes('stopped one') && boardHtml.includes('stopped') && boardHtml.includes('0 pages'))
 check('render board: null → loading', R.renderBoard(null).includes('loading…'))
@@ -245,13 +247,15 @@ check('render detail: quality badges', detailHtml.includes('full') && detailHtml
 check('render detail: consent mark on improved row', detailHtml.includes('✓ consent'))
 check('render detail: ages (today/1d/2d)', detailHtml.includes('today') && detailHtml.includes('1d') && detailHtml.includes('2d'))
 check('render detail: artifact shortened + full in title', detailHtml.includes('p-010203…') && detailHtml.includes('title="p-01020304"'))
-check('render detail: active → stop button', detailHtml.includes('stop mission'))
+check('render detail: active → mark done button', detailHtml.includes('mark done'))
+check('render board: active → done chip', boardHtml.includes('>done</') || boardHtml.includes('done'))
 check('render detail: URL shown', detailHtml.includes('https://thinhost.example/p'))
+check('render detail: briefing section', detailHtml.includes('briefing'))
 
-const stopped = { ...detail, status: 'stopped', stop_reason: 'no reason given', visited: [] }
+const stopped = { ...detail, status: 'stopped', stop_reason: 'no reason given', visited: [], briefing: '# done brief\n' }
 const stoppedHtml = strip(R.renderDetail('m-aaaa1111', stopped))
-check('render detail: stopped → stop reason, NO stop button, no hint',
-  stoppedHtml.includes('stopped: no reason given') && !stoppedHtml.includes('stop mission') && !stoppedHtml.includes('session thin on'))
+check('render detail: stopped → stop reason, NO mark-done, shows briefing',
+  stoppedHtml.includes('stopped: no reason given') && !stoppedHtml.includes('mark done') && stoppedHtml.includes('# done brief') && !stoppedHtml.includes('session thin on'))
 check('render detail: empty visited → empty state', stoppedHtml.includes('no pages yet'))
 
 const noHint = { ...detail, visited: detail.visited.filter((r) => r.consent_improved !== false) }

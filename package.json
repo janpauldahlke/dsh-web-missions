@@ -27,7 +27,10 @@
     "url": "https://github.com/janpauldahlke/dsh-web-missions/issues"
   },
   "scripts": {
-    "build": "node build.mjs && tsc --noEmit"
+    "build": "node build.mjs && tsc --noEmit",
+    "smoke:tool-face": "node build.mjs && node scripts/smoke-tool-face.mjs",
+    "smoke:untrusted": "node scripts/smoke-untrusted.mjs",
+    "smoke:pane": "node scripts/smoke-m6-pane.mjs"
   },
   "keywords": [
     "dsh-plugin",

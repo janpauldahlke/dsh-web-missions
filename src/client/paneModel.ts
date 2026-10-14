@@ -10,6 +10,14 @@
  */
 import type { BudgetPayload, FetchedRowPayload } from '../shared/types.ts'
 
+/** Human size for board (R3.1): B / KB / MB. */
+export function formatBytes(bytes: number | undefined | null): string {
+  if (bytes === undefined || bytes === null || !Number.isFinite(bytes) || bytes < 0) return ''
+  if (bytes < 1024) return `${Math.round(bytes)} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`
+}
+
 /** Host key per C7: lowercased hostname, no port (session dir name). */
 export function hostOf(url: string): string | null {
   try {
