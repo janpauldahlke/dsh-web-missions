@@ -211,6 +211,11 @@ export function MissionsBody(): ReactNode {
             ? `host: ok · updated ${new Date(lastSync).toLocaleTimeString()}`
             : 'host: …'}
       </p>
+      {list?.cwd && (
+        <p style={styles.cwdLine} title={list.root ?? list.cwd}>
+          store: {list.cwd}
+        </p>
+      )}
 
       {view.kind === 'board' ? (
         <div>
@@ -253,8 +258,9 @@ export function Board({ list, onOpen }: { list: ListPayload | null; onOpen: (id:
             <Row key={row.mission_id} onClick={() => onOpen(row.mission_id)}>
               <RowNote note={row.note} active />
               <RowMeta>
-                started {formatTime(row.started_at)} · {row.visited} visited
+                in progress · started {formatTime(row.started_at)} · {row.visited} visited
                 <BudgetChip mission={row} />
+                <FenceChip mission={row} />
               </RowMeta>
             </Row>
           ))}
@@ -290,6 +296,15 @@ function BudgetChip({ mission }: { mission: MissionSummaryPayload }): ReactNode 
   return (
     <span style={exhausted ? styles.budgetExhausted : styles.budgetOk}>
       {' '}· {budgetLine(mission.budget)}
+    </span>
+  )
+}
+
+function FenceChip({ mission }: { mission: MissionSummaryPayload }): ReactNode {
+  if (!mission.fence) return null
+  return (
+    <span style={styles.fenceChip}>
+      {' '}· depth≤{mission.fence.maxDepth} · hosts≤{mission.fence.maxDiscoveredHosts}
     </span>
   )
 }
@@ -386,6 +401,9 @@ export function Detail({
         <>
           <p style={budgetExhausted(detail.budget) ? styles.budgetExhausted : styles.budgetLine}>
             budget {budgetLine(detail.budget)}
+            {detail.fence
+              ? ` · fence depth≤${detail.fence.maxDepth} hosts≤${detail.fence.maxDiscoveredHosts}`
+              : ''}
           </p>
           {hint && <p style={styles.hint}>{hint}</p>}
           {detail.status === 'active' && (
@@ -425,8 +443,18 @@ export function Detail({
 const styles: Record<string, CSSProperties> = {
   root: { padding: 12, fontFamily: 'inherit', fontSize: 13, lineHeight: 1.5 },
   heading: { margin: '0 0 6px', fontSize: 15, fontWeight: 600 },
-  status: { margin: '0 0 10px', opacity: 0.75, fontSize: 12 },
+  status: { margin: '0 0 4px', opacity: 0.75, fontSize: 12 },
   statusError: { margin: '0 0 10px', color: '#f87171', fontSize: 12 },
+  cwdLine: {
+    margin: '0 0 10px',
+    fontSize: 11,
+    opacity: 0.55,
+    fontFamily: 'ui-monospace, monospace',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  fenceChip: { opacity: 0.85 },
   empty: { margin: 0, opacity: 0.55, fontStyle: 'italic' },
   section: { marginBottom: 12 },
   sectionTitle: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.55, margin: '0 0 4px' },

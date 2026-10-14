@@ -116,5 +116,6 @@ export function registerMissionSkill(ctx: Context): void {
     resourceBase: { kind: 'directory', path: skillDir },
     invocation: { modelInvocable: true, userInvocable: true },
   })
-  ctx.effect(() => { unregister() }, `web-missions: skill ${SKILL_NAME}`)
+  // Return disposer — do not call unregister() in the effect body (same scar as tools).
+  ctx.effect(() => unregister, `web-missions: skill ${SKILL_NAME}`)
 }

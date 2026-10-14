@@ -143,6 +143,12 @@ export interface Manifest {
    * as []).
    */
   seeds?: string[]
+  /**
+   * Per-mission fence knobs (inherit project/global config at start; optional
+   * overrides via mission_start max_depth / max_discovered_hosts). Pane +
+   * status surface these for honest userland.
+   */
+  fence?: { maxDepth: number; maxDiscoveredHosts: number }
 }
 
 export interface IndexRow {
@@ -160,6 +166,8 @@ export interface MissionSummary extends IndexRow {
   visited: number
   /** M6 6.2: live budget view from the manifest (null if the manifest is gone). */
   budget?: BudgetView | null
+  /** Per-mission fence (inherit/override at start) — pane displays depth cap. */
+  fence?: { maxDepth: number; maxDiscoveredHosts: number } | null
 }
 
 export interface StartOptions {
@@ -173,6 +181,10 @@ export interface StartOptions {
    * seeds fail loud (normalize_failed) like fetch urls.
    */
   seeds?: string[]
+  /** Override project/global maxDepth for this mission only. */
+  maxDepth?: number
+  /** Override project/global maxDiscoveredHosts for this mission only. */
+  maxDiscoveredHosts?: number
 }
 
 export interface ListResult {
@@ -374,6 +386,17 @@ export function startMission(root: string, opts: StartOptions): Manifest {
   // Unparsable seeds throw normalize_failed (fail loud, same as fetch urls).
   const seeds = [...new Set((opts.seeds ?? []).map((s) => normalizeUrl(s)))]
 
+  // Fence: inherit config, allow per-mission overrides (Refactoring 2).
+  const cfg = readConfig(root)
+  const maxDepth = opts.maxDepth ?? cfg.maxDepth
+  const maxDiscoveredHosts = opts.maxDiscoveredHosts ?? cfg.maxDiscoveredHosts
+  if (!Number.isInteger(maxDepth) || maxDepth < 0) {
+    throw new StoreError('bad_config', `maxDepth must be a non-negative integer: ${String(opts.maxDepth)}`)
+  }
+  if (!Number.isInteger(maxDiscoveredHosts) || maxDiscoveredHosts < 0) {
+    throw new StoreError('bad_config', `maxDiscoveredHosts must be a non-negative integer: ${String(opts.maxDiscoveredHosts)}`)
+  }
+
   const id = newMissionId()
   const now = new Date().toISOString()
   const manifest: Manifest = {
@@ -386,6 +409,7 @@ export function startMission(root: string, opts: StartOptions): Manifest {
     updated_at: now,
     fetched: [],
     ...(seeds.length > 0 ? { seeds } : {}),
+    fence: { maxDepth, maxDiscoveredHosts },
   }
 
   const dir = missionDir(root, id)
@@ -488,6 +512,7 @@ export function listMissions(root: string): ListResult {
       // M6 6.2: the board shows budget remaining/max per active row — read
       // from the manifest the summary already loads (no new storage).
       budget: manifest ? budgetView(manifest.budget) : null,
+      fence: manifest?.fence ?? null,
     }
   }
   return {

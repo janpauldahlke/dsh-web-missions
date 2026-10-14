@@ -8,10 +8,9 @@
  * - POST /api/web-missions/clear-all       → wipe missions + sessions (M6 6.1, D-M6.2)
  * - GET /api/web-missions/sessions         → session visibility (M6 6.1, D-M6.4)
  *
- * Routes have no agent session, so the mission root resolves from the server
- * process cwd (acceptance server booted in this repo — D6). That is the one
- * sanctioned `process.cwd()` use: tools resolve per call from the exec header,
- * these resolve once from the server (C1 review #4).
+ * Routes have no agent session. Mission root follows the last cwd any
+ * mission_* tool used in this process (R2.3 pane↔session bridge); before
+ * any tool runs, falls back to process.cwd() (acceptance boot — D6).
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { URL } from 'node:url'
@@ -27,13 +26,13 @@ import {
 import {
   StoreError,
   listMissions,
-  missionRoot,
   missionStatus,
   stopMission,
   clearRecents,
   clearAll,
 } from './store.ts'
 import { sessionViews } from './sessions-view.ts'
+import { getMissionCwd, paneMissionRoot } from './workspace.ts'
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -94,8 +93,6 @@ function readJsonBody(req: IncomingMessage, limit = 64 * 1024): Promise<unknown>
 }
 
 export function registerMissionsRoutes(ctx: Context): void {
-  const root = missionRoot(process.cwd())
-
   const unregisterList = ctx.webServer.register({
     kind: 'exact',
     path: MISSIONS_ROUTE,
@@ -105,7 +102,13 @@ export function registerMissionsRoutes(ctx: Context): void {
         return
       }
       try {
-        send(res, 200, listMissions(root))
+        const root = paneMissionRoot()
+        send(res, 200, {
+          ...listMissions(root),
+          // Operator truth: which store the pane is reading (F6 / session cwd).
+          cwd: getMissionCwd(),
+          root,
+        })
       } catch (error) {
         if (error instanceof StoreError) {
           sendError(res, httpStatusFor(error), error.code, errorMessage(error))
@@ -161,7 +164,7 @@ export function registerMissionsRoutes(ctx: Context): void {
             /* no usable body → stop without a reason */
           }
           try {
-            const { manifest, already_stopped } = stopMission(root, stopId, reason)
+            const { manifest, already_stopped } = stopMission(paneMissionRoot(), stopId, reason)
             send(res, 200, {
               ok: true,
               mission_id: manifest.mission_id,
@@ -188,7 +191,7 @@ export function registerMissionsRoutes(ctx: Context): void {
           return
         }
         try {
-          send(res, 200, missionStatus(root, remainder))
+          send(res, 200, missionStatus(paneMissionRoot(), remainder))
         } catch (error) {
           if (error instanceof StoreError) {
             sendError(res, httpStatusFor(error), error.code, errorMessage(error))
@@ -211,7 +214,7 @@ export function registerMissionsRoutes(ctx: Context): void {
         return
       }
       try {
-        send(res, 200, { ok: true, ...clearRecents(root) })
+        send(res, 200, { ok: true, ...clearRecents(paneMissionRoot()) })
       } catch (error) {
         if (error instanceof StoreError) {
           sendError(res, httpStatusFor(error), error.code, errorMessage(error))
@@ -246,7 +249,7 @@ export function registerMissionsRoutes(ctx: Context): void {
           return
         }
         try {
-          send(res, 200, { ok: true, ...clearAll(root) })
+          send(res, 200, { ok: true, ...clearAll(paneMissionRoot()) })
         } catch (error) {
           if (error instanceof StoreError) {
             sendError(res, httpStatusFor(error), error.code, errorMessage(error))
@@ -270,7 +273,7 @@ export function registerMissionsRoutes(ctx: Context): void {
         return
       }
       try {
-        send(res, 200, { ok: true, sessions: sessionViews(root) })
+        send(res, 200, { ok: true, sessions: sessionViews(paneMissionRoot()) })
       } catch (error) {
         if (error instanceof StoreError) {
           sendError(res, httpStatusFor(error), error.code, errorMessage(error))

@@ -1,5 +1,0 @@
-{
-  "model": "prove-product-loop (hermetic tools + live :3090 health)",
-  "tools_called": ["mission_start", "mission_fetch", "mission_find", "mission_read", "mission_verify", "mission_stop"],
-  "messages": []
-}

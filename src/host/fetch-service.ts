@@ -80,6 +80,7 @@ import { readConfig } from './config.ts'
 import { checkDepthFence, type FenceCheck } from './depth-fence.ts'
 import { normalizeUrl } from './normalize.ts'
 import { FetchError } from './fetcher.ts'
+import { hintTools } from './tool-registry.ts'
 import {
   StoreError,
   appendFetchedRow,
@@ -160,10 +161,17 @@ export function ageDays(fetchedAt: string, nowMs: number): number {
   return Math.max(0, Math.round(((nowMs - t) / 86400000) * 100) / 100)
 }
 
-function nextStepHint(quality: FetchedPage['quality']): string {
+function nextStepHint(quality: FetchedPage['quality'], signals: string[] = []): string {
+  if (signals.includes('js_required') || signals.includes('js_shell')) {
+    return `page looks JS-gated or shell-only (quality_signals) — ${DO_NOT_CLAIM}; do not retry this URL; pick another source`
+  }
+  if (signals.includes('low_density')) {
+    // Soft only — keep full; warn without the hard do-not-claim hammer.
+    return `page stored but low_density (likely chrome/nav) — weak evidence; ${hintTools('mission_read')} to confirm or fetch another URL`
+  }
   switch (quality) {
     case 'full':
-      return 'page stored — search it with mission_find or fetch one of the sample links'
+      return `page stored — ${hintTools('mission_find', 'mission_read')} (or fetch a sample_links URL)`
     case 'thin':
       return `page is thin (short or likely a consent wall) — ${DO_NOT_CLAIM}; try a sample link or re-fetch with force`
     case 'blocked':
@@ -172,9 +180,15 @@ function nextStepHint(quality: FetchedPage['quality']): string {
 }
 
 /** M3 cached wording (M_3_cache.md hit path, verbatim intent). */
-function cachedNextStepHint(quality: FetchedPage['quality'], age: number): string {
+function cachedNextStepHint(quality: FetchedPage['quality'], age: number, signals: string[] = []): string {
+  if (signals.includes('js_shell') || signals.includes('js_required')) {
+    return `cached: stored as ${quality} with ${signals.filter((s) => s.startsWith('js_')).join(',')} (age ${age}d) — ${DO_NOT_CLAIM}. Prefer another URL.`
+  }
+  if (signals.includes('low_density')) {
+    return `cached: already stored (age ${age}d) with low_density — weak evidence; ${hintTools('mission_read')}, or force: true to re-fetch.`
+  }
   if (quality === 'full') {
-    return `cached: already stored (age ${age}d). Use mission_find, or pass force: true to re-fetch.`
+    return `cached: already stored (age ${age}d). ${hintTools('mission_find', 'mission_read')}, or force: true to re-fetch.`
   }
   return `cached: stored as ${quality} (age ${age}d) — ${DO_NOT_CLAIM}. Re-fetch with force: true if you expect new content.`
 }
@@ -182,7 +196,8 @@ function cachedNextStepHint(quality: FetchedPage['quality'], age: number): strin
 /**
  * M5 5.6 honesty gate: EVERY thin/blocked receipt carries the deterministic
  * do-not-claim text in `next_step_hint` — enforced at the receipt choke point
- * (not by hoping each hint path remembers). `full` receipts pass through.
+ * (not by hoping each hint path remembers). Soft low_density/js_* already
+ * include the claim text above.
  */
 function honestyGate(hint: string, quality: FetchedPage['quality']): string {
   if (quality === 'full' || hint.includes(DO_NOT_CLAIM)) return hint
@@ -261,7 +276,12 @@ export async function runFetch(
   //     from the nearest seed (maxDepth) + max distinct non-seed hosts
   //     (maxDiscoveredHosts). Refusals: depth_exceeded / host_breadth_exceeded.
   //     `force` re-gates (the hit path above is the only skip).
-  const fence = checkDepthFence(root, manifest, url, config)
+  //     Per-mission fence (manifest.fence) wins over project/global config.
+  const fenceKnobs = {
+    maxDepth: manifest.fence?.maxDepth ?? config.maxDepth,
+    maxDiscoveredHosts: manifest.fence?.maxDiscoveredHosts ?? config.maxDiscoveredHosts,
+  }
+  const fence = checkDepthFence(root, manifest, url, fenceKnobs)
   //
   // 4c. C6 budget gate: a spawn attempt is always CHARGED. Exhausted → hard
   //     stop BEFORE the spawn (D-M5.2: no override; a new mission_start
@@ -358,7 +378,7 @@ export async function runFetch(
   }).length
   const hintFindFirst =
     sameHost >= 1
-      ? `this host has ${sameHost} stored pages — consider mission_find before fetching a new path`
+      ? `this host has ${sameHost} stored pages — consider ${hintTools('mission_find')} before fetching a new path`
       : undefined
 
   // 8. C4 receipt (fresh: cached:false, age_days:0; C6 budget after the charge)
@@ -382,7 +402,9 @@ export async function runFetch(
     budget: budgetView(manifest.budget),
     visited_count: updated.fetched.length,
     next_step_hint: honestyGate(
-      consentOutcome?.attempted ? consentNextStepHint(page, consentOutcome) : nextStepHint(page.quality),
+      consentOutcome?.attempted
+        ? consentNextStepHint(page, consentOutcome)
+        : nextStepHint(page.quality, page.qualitySignals),
       page.quality,
     ),
     sample_links: stored.links.slice(0, sampleCap).map((l) => l.url),
@@ -424,7 +446,10 @@ function buildHitReceipt(
     parent_artifact_id: hit.parent_artifact_id ?? null,
     budget: budgetView(manifest.budget),
     visited_count: manifest.fetched.length,
-    next_step_hint: honestyGate(cachedNextStepHint(stored.page.quality, age), stored.page.quality),
+    next_step_hint: honestyGate(
+      cachedNextStepHint(stored.page.quality, age, stored.page.qualitySignals ?? []),
+      stored.page.quality,
+    ),
     sample_links: stored.links.slice(0, sampleCap).map((l) => l.url),
   }
 }

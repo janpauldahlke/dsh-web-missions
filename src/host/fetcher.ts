@@ -171,11 +171,21 @@ export function resolveBrowser39Bin(explicit?: string): Browser39Bin | null {
   return null
 }
 
+/** Soft / hard quality markers (Refactoring 2 — no LLM categorizer). */
+const JS_SHELL_MARKERS = [
+  'please enable javascript',
+  'enable js',
+  'javascript is required',
+  'without javascript',
+  'turn on javascript',
+  'js_required',
+]
+
 /**
  * Deterministic quality label (S7: the label is OURS).
- *   blocked: HTTP 4xx/5xx, or zero content
+ *   blocked: HTTP 4xx/5xx, or zero content (+ js_required when applicable)
  *   thin:    content < thinThresholdChars, or CMP marker in title + first 500 chars
- *   full:    otherwise
+ *   full:    otherwise — may still carry soft signals (low_density / js_shell)
  */
 export function assessQuality(opts: {
   status: number
@@ -184,22 +194,48 @@ export function assessQuality(opts: {
   thinThresholdChars: number
 }): { quality: PageQuality; qualitySignals: string[] } {
   const { status, title, content, thinThresholdChars } = opts
+  const head = `${title} ${content.slice(0, Math.max(CMP_SCAN_CHARS, 2000))}`.toLowerCase()
+  const jsHit = JS_SHELL_MARKERS.some((m) => head.includes(m))
+
   if (status >= 400) {
-    return { quality: 'blocked', qualitySignals: [`http-${status}`] }
+    const signals = [`http-${status}`]
+    if (jsHit || status === 403) signals.push('js_required')
+    return { quality: 'blocked', qualitySignals: signals }
   }
   if (content.trim() === '') {
-    return { quality: 'blocked', qualitySignals: ['empty-content'] }
+    return { quality: 'blocked', qualitySignals: jsHit ? ['empty-content', 'js_required'] : ['empty-content'] }
   }
   const signals: string[] = []
   if (content.length < thinThresholdChars) {
     signals.push(`text<${thinThresholdChars}chars`)
   }
-  const scan = `${title} ${content.slice(0, CMP_SCAN_CHARS)}`.toLowerCase()
   for (const marker of CMP_MARKERS) {
-    if (scan.includes(marker)) signals.push(`cmp-marker:${marker}`)
+    if (head.includes(marker)) signals.push(`cmp-marker:${marker}`)
   }
-  if (signals.length > 0) return { quality: 'thin', qualitySignals: signals }
-  return { quality: 'full', qualitySignals: [] }
+  if (signals.length > 0) {
+    if (jsHit) signals.push('js_required')
+    return { quality: 'thin', qualitySignals: signals }
+  }
+
+  // Soft signals on otherwise-full pages (forebet chrome class) — keep full.
+  // Only on *long* pages so normal short full pages stay clean (honesty A3).
+  const soft: string[] = []
+  if (jsHit) soft.push('js_shell')
+  const textish = content.replace(/[^a-zA-Z0-9\s.,;:!?%\-]/g, ' ').replace(/\s+/g, ' ').trim()
+  const density = content.length === 0 ? 0 : textish.length / content.length
+  const words = textish.toLowerCase().split(/\s+/).filter(Boolean)
+  const uniqueRatio = words.length === 0 ? 1 : new Set(words).size / words.length
+  const tagChars = (content.match(/<[^>]+>/g) || []).join('').length
+  const tagRatio = content.length === 0 ? 0 : tagChars / content.length
+  const longEnough = content.length >= thinThresholdChars * 4
+  // Chrome/nav shells: low extractable density, markup-heavy, or tiny unique vocab.
+  if (longEnough && (density < 0.4 || tagRatio > 0.35 || uniqueRatio < 0.18)) {
+    soft.push('low_density')
+  }
+  const digitRuns = (textish.match(/\d+/g) || []).length
+  if (soft.includes('low_density') && digitRuns < 3) soft.push('no_main_table')
+
+  return { quality: 'full', qualitySignals: soft }
 }
 
 interface B39ResultLine {

@@ -26,7 +26,8 @@ import { HEALTH_ROUTE, PLUGIN, VERSION } from '../shared/types.ts'
 import { DEFAULT_CONFIG, readConfig } from './config.ts'
 import { registerMissionsRoutes } from './routes.ts'
 import { registerMissionSkill, SKILL_NAME } from './skill.ts'
-import { MISSION_TOOL_NAMES, registerMissionTools } from './tools.ts'
+import { registerMissionTools } from './tools.ts'
+import { getRegisteredMissionTools } from './tool-registry.ts'
 import { missionRoot } from './store.ts'
 
 export const name = PLUGIN
@@ -75,7 +76,8 @@ function registerHealthRoute(ctx: Context): void {
           name: PLUGIN,
           version: VERSION,
           time: new Date().toISOString(),
-          tools: [...MISSION_TOOL_NAMES],
+          // Honest: only tools that actually registered (not the wish list).
+          tools: [...getRegisteredMissionTools()],
           skill: skillShipped(),
           skill_name: SKILL_NAME,
           config,
@@ -92,7 +94,11 @@ function registerHealthRoute(ctx: Context): void {
 export function apply(ctx: Context): void {
   try {
     const disposeTools = registerMissionTools(ctx)
-    ctx.effect(() => { disposeTools() }, 'web-missions: tools')
+    // Cordis: effect body RETURN VALUE is the disposer. Calling disposeTools()
+    // here would unregister every mission_* tool immediately on apply (R2 scar:
+    // safeRegister made all 8 succeed → self-dispose; earlier find-schema throw
+    // skipped this line and accidentally left 4 tools alive).
+    ctx.effect(() => disposeTools, 'web-missions: tools')
   } catch (error) {
     ctx.logger?.(PLUGIN)
       .warn('tool registration failed (continuing without it): %s', errorMessage(error))

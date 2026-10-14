@@ -38,20 +38,20 @@ Inspiration: Eris `src/tools/web/` (short-lookup). This repo aimed at
 
 ---
 
-## 2. Current state (2026-10-14)
+## 2. Current state (2026-10-14 evening — Refactoring 2)
 
 | Layer | State |
 | --- | --- |
-| Host phases M0–M9.3 | **GREEN**, committed through `b979982` / review docs `9f113ea` |
-| Vault / long-horizon | Was marked DONE for overnight agent; **product rescue is NOT done** |
+| Host phases M0–M9.3 | **GREEN** (prior commits) |
+| **Refactoring 2 P0** | **DONE** — smoking gun was `best_match_url: { type: ['string','null'] }` (harness rejects type arrays → aborted registration after fetch). Fix: string-only schema + `safeRegister` per tool. `/health.tools` = **actually registered** (8). |
+| **Refactoring 2 P1** | **DONE** — soft quality (`js_required` / `js_shell` / `low_density`); per-mission `max_depth` / `max_discovered_hosts` + `fence` on manifest/pane; pane cwd follows last tool cwd; status `artifacts[]` citation map; honest `hintTools`. |
 | Profile install | Symlink: `~/.dsh/profiles/web/node_modules/dsh-local-web-missions` → this repo |
-| Tools in `lib/` | `mission_start\|list\|status\|fetch\|find\|stop` (6) — **registered in code** |
-| Discovery companion | Built & M7-green; **NOT in profile bundles** |
-| Operator test | Failed: model sought tools that felt “not registered” / stuck on lifecycle; could not complete a real web mission |
-| External review | `plan/REVIEW/` (INDEX → REVIEW → ROUND3–5 → **PLAN_FINAL.md**) — no code changed by review |
+| Tools | `mission_start\|list\|status\|fetch\|find\|read\|verify\|stop` (**8**) |
+| Acceptance `:3090` | Booted via `./scripts/boot-3090.sh`; `prove-product-loop` **ALL GREEN** incl. live health |
+| Discovery companion | Still optional / not required for this dogfood |
+| **Uncommitted** | Local working tree has R2 changes — **do not push**; commit when operator asks |
 
-**Truth:** overnight optimised for host AC (`execute()` smokes). Operator asked
-for **agent-in-the-loop**. Different finish lines.
+**Operator dogfood (next):** paste the prompt in §Dogfood below into `:3080` (or `:3090`) chat with workspace-write. Expect find→read→verify→stop, **zero** FS reads of `chunks/*.md`, pane shows store cwd + fence.
 
 ---
 
@@ -181,6 +181,40 @@ for one entity without ghost-tool thrash.
 
 ---
 
+## Dogfood — Refactoring 2 operator retest (paste into chat)
+
+**Why this mission:** depth-worthy (two primary docs, hop via sample_links if
+needed), cheap (public HTML), quality-sensitive (spec vs tutorial paraphrase),
+forces find→read→verify→stop instead of chunk greps.
+
+```
+Use only web-mission tools (mission_start → fetch → find → read → verify → stop).
+Do not read .dsh/web-missions/**/chunks/*.md via bash/FS.
+
+Start a mission with:
+  note: "module script defer default — WHATWG vs MDN"
+  budget: 12
+  max_depth: 3
+  seeds:
+    - https://html.spec.whatwg.org/multipage/scripting.html
+    - https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script
+
+Question: Does <script type="module"> defer by default? Do WHATWG and MDN agree?
+For each source: mission_find for "module" / "defer", then mission_read the best
+artifact for verbatim text. Write a short verdict into mission.md with
+[p-…](url) citations. mission_verify, then mission_stop with a one-line reason.
+
+If a receipt has quality_signals js_required / js_shell / low_density: do not
+treat it as evidence — pick another sample_links URL. Prefer mission_status
+artifacts[] for the Sources table (no grep of page.json).
+```
+
+**Expect:** all 8 tools in schema; pane shows `store: <cwd>` + `depth≤3`; ≤15 min;
+no ghost-tool thrash. `:3090` already up for health/board; dogfood on `:3080` is fine
+once that host has the rebuilt symlink (same repo).
+
+---
+
 *Created 2026-10-14 for Cursor continuation. Operator: Hagbard. Prior overnight: M0–M9 host.*
 
 ---
@@ -200,3 +234,12 @@ for one entity without ghost-tool thrash.
 - Prove: `node scripts/prove-product-loop.mjs` ALL GREEN; live `:3090` health
   shows 8 tools + skill + allowlist off. Sacred `:3080`/`:8080` untouched.
 - Local commits only — **never pushed**.
+
+**2026-10-14 evening — Refactoring 2 P0+P1**
+
+- P0 root cause: harness rejects JSON Schema `type: ['string','null']` on
+  `mission_find.best_match_url` → registration aborted after fetch; agent saw 4 tools.
+  Fix: string-only + per-tool `safeRegister`; honest `/health.tools`.
+- P1: soft quality signals; per-mission fence; pane↔session cwd bridge; status
+  `artifacts[]`; hints only name registered tools.
+- Still **uncommitted** until operator asks.

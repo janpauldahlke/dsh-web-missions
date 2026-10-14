@@ -23,3 +23,6 @@ dist/
 STATUS.md
 
 # NOTE: `lib/` IS tracked on purpose (C9 sibling law — `prepare` falls back to prebuilt lib/).
+
+# Deep / messy phase plans + review evidence (local only; root PLAN.md stays tracked)
+plan/

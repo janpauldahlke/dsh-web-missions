@@ -33,6 +33,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DO_NOT_CLAIM, type ConsentAttempt, type FetchedPage } from '../shared/types'
+import { hintTools } from './tool-registry.ts'
 
 // ---------------------------------------------------------------------------
 // Profiles (asset + override)
@@ -535,7 +536,7 @@ export function consentNextStepHint(page: FetchedPage, outcome: ConsentOutcome):
   if (outcome.improved) {
     const after =
       page.quality === 'full'
-        ? 'search it with mission_find or fetch one of the sample links'
+        ? `search it with ${hintTools('mission_find')} or fetch one of the sample links`
         : `still thin — ${DO_NOT_CLAIM}; try a sample link or re-fetch with force`
     return `consent: accept worked — page improved; ${after}`
   }

@@ -130,14 +130,14 @@ check('V1: one batch after first fetch', callCount() === 1, 'calls=' + callCount
 const a2 = await fetchTool({ url: base + '/a' })
 check('V1: second fetch cached:true, same artifact_id', a2.cached === true && a2.artifact_id === a1.artifact_id && a2.age_days === 0, J({ c: a2.cached, a: [a1.artifact_id, a2.artifact_id], age: a2.age_days }))
 check('V1: exactly one batch invocation for both fetches', callCount() === 1, 'calls=' + callCount())
-check('V1: cached hint wording', a2.next_step_hint === 'cached: already stored (age 0d). Use mission_find, or pass force: true to re-fetch.', a2.next_step_hint)
+check('V1: cached hint wording', typeof a2.next_step_hint === 'string' && a2.next_step_hint.startsWith('cached: already stored (age 0d)') && a2.next_step_hint.includes('mission_find'), a2.next_step_hint)
 check('V1: one ledger row', (await status()).visited.length === 1, 'rows=' + (await status()).visited.length)
 
 // --- V2 ------------------------------------------------------------------------
 const b1 = await fetchTool({ url: base + '/b' })
 check('V2: B fresh (miss, age_days 0)', b1.cached === false && b1.age_days === 0, J({ c: b1.cached, age: b1.age_days, e: b1.error }))
 check('V2: one new batch for B', callCount() === 2, 'calls=' + callCount())
-check('V2: B receipt carries hint_find_first', b1.hint_find_first === 'this host has 1 stored pages — consider mission_find before fetching a new path', J(b1.hint_find_first))
+check('V2: B receipt carries hint_find_first', typeof b1.hint_find_first === 'string' && b1.hint_find_first.includes('stored pages') && b1.hint_find_first.includes('mission_find'), J(b1.hint_find_first))
 const a3 = await fetchTool({ url: base + '/a' })
 check('V2: A still a hit (V1 holds), no new batch', a3.cached === true && a3.artifact_id === a1.artifact_id && callCount() === 2, J({ c: a3.cached, calls: callCount() }))
 
@@ -163,7 +163,7 @@ writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
 const aAged = await fetchTool({ url: base + '/a' })
 check('V4: aged hit cached:true, zero batch', aAged.cached === true && callCount() === 3, J({ c: aAged.cached, calls: callCount() }))
 check('V4: age_days ≈ 1.04 (25h)', aAged.age_days === 1.04, 'age=' + aAged.age_days)
-check('V4: cached hint carries the age', aAged.next_step_hint === 'cached: already stored (age 1.04d). Use mission_find, or pass force: true to re-fetch.', aAged.next_step_hint)
+check('V4: cached hint carries the age', typeof aAged.next_step_hint === 'string' && aAged.next_step_hint.startsWith('cached: already stored (age 1.04d)') && aAged.next_step_hint.includes('mission_find'), aAged.next_step_hint)
 
 // --- V5 ------------------------------------------------------------------------
 const bl1 = await fetchTool({ url: base + '/blocked' })

@@ -157,6 +157,18 @@ const main = async () => {
   check('t9 empty content blocked', assessQuality({ status: 200, title: '', content: '   ', thinThresholdChars: 300 }).quality === 'blocked')
   check('t9 301 chars full', assessQuality({ status: 200, title: '', content: 'x'.repeat(301), thinThresholdChars: 300 }).quality === 'full')
   check('t9 299 chars thin', assessQuality({ status: 200, title: '', content: 'x'.repeat(299), thinThresholdChars: 300 }).quality === 'thin')
+  // Soft signals (R2.5): keep quality=full but flag chrome / JS shells.
+  const js403 = assessQuality({ status: 403, title: 'Blocked', content: 'Please enable JavaScript to continue.', thinThresholdChars: 300 })
+  check('t10 403 → blocked + js_required', js403.quality === 'blocked' && js403.qualitySignals.includes('js_required'), JSON.stringify(js403))
+  const chrome = assessQuality({
+    status: 200,
+    title: 'Odds',
+    content: ('<nav>' + 'menu '.repeat(200) + '</nav>' + ' '.repeat(50)).repeat(2),
+    thinThresholdChars: 300,
+  })
+  check('t11 chrome-long → full + low_density', chrome.quality === 'full' && chrome.qualitySignals.includes('low_density'), JSON.stringify(chrome))
+  const shortFull = assessQuality({ status: 200, title: '', content: 'x'.repeat(400), thinThresholdChars: 300 })
+  check('t12 short full stays clean (no soft)', shortFull.quality === 'full' && shortFull.qualitySignals.length === 0, JSON.stringify(shortFull))
 
   console.log(fail === 0 ? 'smoke-fetcher: all checks passed' : 'smoke-fetcher: ' + fail + ' FAILURES')
   server.close()

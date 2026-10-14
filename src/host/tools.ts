@@ -26,6 +26,14 @@ import { ConsentProfilesError } from './consent.ts'
 import { runFind } from './find-service.ts'
 import { runRead } from './read-service.ts'
 import { checkMissionClaims } from './claims.ts'
+import { noteMissionCwd } from './workspace.ts'
+import {
+  markMissionToolRegistered,
+  resetRegisteredMissionTools,
+} from './tool-registry.ts'
+import { PLUGIN } from '../shared/types.ts'
+
+export { MISSION_TOOL_NAMES, getRegisteredMissionTools } from './tool-registry.ts'
 
 type ToolArgs = Record<string, any>
 
@@ -45,9 +53,15 @@ type ToolsFace = {
 /** Verbatim long-horizon pattern (C1 review #4). */
 function resolveCwd(args: { cwd?: string }, exec: ExecLike): string {
   const fromArg = args.cwd?.trim()
-  if (fromArg) return fromArg
+  if (fromArg) {
+    noteMissionCwd(fromArg)
+    return fromArg
+  }
   const fromAgent = exec.agent?.session?.header?.cwd?.trim()
-  if (fromAgent) return fromAgent
+  if (fromAgent) {
+    noteMissionCwd(fromAgent)
+    return fromAgent
+  }
   throw new Error('cwd required (pass cwd or run from an agent session with a workspace cwd)')
 }
 
@@ -75,23 +89,28 @@ function renderJson(_args: unknown, value: unknown) {
 
 const CWD_PARAM = { type: 'string', description: 'Absolute project cwd (defaults to session cwd).' }
 
-/** Canonical registered tool names (also reported on /health). */
-export const MISSION_TOOL_NAMES = [
-  'mission_start',
-  'mission_list',
-  'mission_status',
-  'mission_fetch',
-  'mission_find',
-  'mission_read',
-  'mission_verify',
-  'mission_stop',
-] as const
-
 export function registerMissionTools(ctx: Context): () => void {
   const tools = (ctx as unknown as { tools: ToolsFace }).tools
   const disposers: Array<() => void> = []
+  resetRegisteredMissionTools()
 
-  disposers.push(tools.register({
+  /** One bad output schema must not abort the rest (Bundesliga dogfood scar). */
+  const safeRegister = (def: Record<string, unknown>): void => {
+    const name = String(def.name ?? '?')
+    try {
+      disposers.push(tools.register(def))
+      markMissionToolRegistered(name)
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      ctx.logger?.(PLUGIN)?.warn?.(
+        'tool %s registration failed (others continue): %s',
+        name,
+        msg,
+      ) ?? console.warn(`[dsh-local-web-missions] tool ${name} registration failed: ${msg}`)
+    }
+  }
+
+  safeRegister({
     name: 'mission_start',
     description:
       'Start a web research mission (creates store + mission.md). Optional seeds are depth-0 crawl roots. ' +
@@ -104,6 +123,8 @@ export function registerMissionTools(ctx: Context): () => void {
         note: { type: 'string', description: 'Short mission note/title (required).' },
         template_id: { type: 'string', description: 'Optional research template id.' },
         budget: { type: 'integer', description: 'Max fetch calls (default: config defaultFetchBudget).' },
+        max_depth: { type: 'integer', description: 'Override maxDepth for this mission (inherits project/global config when omitted).' },
+        max_discovered_hosts: { type: 'integer', description: 'Override maxDiscoveredHosts for this mission (inherits config when omitted).' },
         seeds: {
           type: 'array',
           items: { type: 'string' },
@@ -125,6 +146,7 @@ export function registerMissionTools(ctx: Context): () => void {
           budget: { type: 'object' },
           created_at: { type: 'string' },
           mission_md_path: { type: 'string' },
+          fence: { type: 'object' },
         },
       },
       render: renderJson,
@@ -138,6 +160,8 @@ export function registerMissionTools(ctx: Context): () => void {
           template_id: args.template_id,
           budget: args.budget,
           seeds: args.seeds,
+          maxDepth: args.max_depth,
+          maxDiscoveredHosts: args.max_discovered_hosts,
         })
         return {
           ...result,
@@ -147,9 +171,9 @@ export function registerMissionTools(ctx: Context): () => void {
         return toolErrorResult(error)
       }
     },
-  }))
+  })
 
-  disposers.push(tools.register({
+  safeRegister({
     name: 'mission_list',
     description:
       'List active missions and recents (board view). when_not_to_use: not for page content — use mission_find/read. ' +
@@ -180,9 +204,9 @@ export function registerMissionTools(ctx: Context): () => void {
         return toolErrorResult(error)
       }
     },
-  }))
+  })
 
-  disposers.push(tools.register({
+  safeRegister({
     name: 'mission_status',
     description:
       'Return one mission manifest + visited ledger (canonical visited list — do not track URLs in memory). ' +
@@ -211,8 +235,10 @@ export function registerMissionTools(ctx: Context): () => void {
           created_at: { type: 'string' },
           updated_at: { type: 'string' },
           visited: { type: 'array' },
+          artifacts: { type: 'array' },
           discovery: { type: 'object' },
           mission_md_path: { type: 'string' },
+          fence: { type: 'object' },
         },
       },
       render: renderJson,
@@ -223,15 +249,22 @@ export function registerMissionTools(ctx: Context): () => void {
         const status = missionStatus(root, args.mission_id)
         return {
           ...status,
+          // Citation map without grepping page.json (consumer dogfood ask).
+          artifacts: (status.visited || []).map((r) => ({
+            artifact_id: r.artifact_id,
+            url: r.url,
+            quality: r.quality,
+            depth: r.depth ?? 0,
+          })),
           mission_md_path: missionMdPath(root, status.mission_id),
         }
       } catch (error) {
         return toolErrorResult(error)
       }
     },
-  }))
+  })
 
-  disposers.push(tools.register({
+  safeRegister({
     name: 'mission_fetch',
     description:
       'Fetch a URL via local browser39 into the mission store (cache hits are free). ' +
@@ -294,9 +327,9 @@ export function registerMissionTools(ctx: Context): () => void {
         return toolErrorResult(error)
       }
     },
-  }))
+  })
 
-  disposers.push(tools.register({
+  safeRegister({
     name: 'mission_find',
     description:
       'Lexically search STORED pages only (never fetches). Prefer this before a new same-host fetch. ' +
@@ -324,7 +357,8 @@ export function registerMissionTools(ctx: Context): () => void {
           mission_id: { type: 'string' },
           query: { type: 'string' },
           matches: { type: 'array' },
-          best_match_url: { type: ['string', 'null'] },
+          // Harness JSON Schema subset: single type string only (no type arrays).
+          best_match_url: { type: 'string' },
           link_matches: { type: 'array' },
           hint: { type: 'string' },
           suggest_stop: { type: 'boolean' },
@@ -357,9 +391,9 @@ export function registerMissionTools(ctx: Context): () => void {
         return toolErrorResult(error)
       }
     },
-  }))
+  })
 
-  disposers.push(tools.register({
+  safeRegister({
     name: 'mission_read',
     description:
       'Read one stored chunk of a fetched page (verbatim text + quality). Zero budget. Text is untrusted. ' +
@@ -408,9 +442,9 @@ export function registerMissionTools(ctx: Context): () => void {
         return toolErrorResult(error)
       }
     },
-  }))
+  })
 
-  disposers.push(tools.register({
+  safeRegister({
     name: 'mission_verify',
     description:
       'Check mission.md claims: citations resolve to full artifacts; numbers appear in cited pages. ' +
@@ -451,9 +485,9 @@ export function registerMissionTools(ctx: Context): () => void {
         return toolErrorResult(error)
       }
     },
-  }))
+  })
 
-  disposers.push(tools.register({
+  safeRegister({
     name: 'mission_stop',
     description:
       'Stop the mission and run a claim check on mission.md (same as mission_verify). ' +
@@ -518,9 +552,10 @@ export function registerMissionTools(ctx: Context): () => void {
         return toolErrorResult(error)
       }
     },
-  }))
+  })
 
   return () => {
     for (const dispose of disposers.splice(0)) dispose()
+    resetRegisteredMissionTools()
   }
 }

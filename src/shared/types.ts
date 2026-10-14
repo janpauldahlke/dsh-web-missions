@@ -54,6 +54,8 @@ export interface MissionSummaryPayload {
   visited: number
   /** Live from the manifest (M6 6.2: the board shows budget per active row). */
   budget?: BudgetPayload | null
+  /** Per-mission depth/host fence (R2.6). */
+  fence?: { maxDepth: number; maxDiscoveredHosts: number } | null
 }
 
 export interface FetchedRowPayload {
@@ -71,6 +73,9 @@ export interface FetchedRowPayload {
 export interface ListPayload {
   active: MissionSummaryPayload[]
   recents: MissionSummaryPayload[]
+  /** Store the pane is reading (R2.3 — last tool cwd or process.cwd). */
+  cwd?: string
+  root?: string
 }
 
 export interface StatusPayload {
@@ -82,6 +87,7 @@ export interface StatusPayload {
   updated_at: string
   budget: BudgetPayload
   visited: FetchedRowPayload[]
+  fence?: { maxDepth: number; maxDiscoveredHosts: number }
 }
 
 export interface StopPayload {
