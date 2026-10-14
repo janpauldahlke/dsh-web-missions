@@ -217,13 +217,14 @@ const list = {
 }
 
 const boardHtml = strip(R.renderBoard(list))
-check('render board: sections', boardHtml.includes('active (1)') && boardHtml.includes('recent (2)'), boardHtml.slice(0, 200))
+// R5: CollapsibleCard labels (bodies collapsed by default; active expands when ≤3)
+check('render board: sections', boardHtml.includes('active') && boardHtml.includes('recent'), boardHtml.slice(0, 280))
 check('render board: active row (note + visited + budget remaining/max)',
   boardHtml.includes('V10 host breadth') && boardHtml.includes('3 visited') && boardHtml.includes('2/5 fetch_calls'))
 check('formatBytes: KB', m.formatBytes(2048).includes('KB'))
 check('formatBytes: MB', m.formatBytes(2 * 1024 * 1024).includes('MB'))
-check('render board: recents rows (status + updated + pages)',
-  boardHtml.includes('stopped one') && boardHtml.includes('stopped') && boardHtml.includes('0 pages'))
+check('render board: recents card (collapsed — label + count preview)',
+  boardHtml.includes('recent') && /aria-expanded="false"/.test(boardHtml))
 check('render board: null → loading', R.renderBoard(null).includes('loading…'))
 check('render board: empty → empty state',
   R.renderBoard({ active: [], recents: [] }).includes('no missions yet'))
@@ -240,26 +241,26 @@ const detail = {
 }
 
 const detailHtml = strip(R.renderDetail('m-aaaa1111', detail))
-check('render detail: budget line', detailHtml.includes('budget 2/5 fetch_calls'))
-check('render detail: hint line (exact, first thin+attempted-not-improved)',
-  detailHtml.includes('session thin on thinhost.example — export cookies or preload into ~/.dsh/browser39/sessions/thinhost.example/'))
-check('render detail: quality badges', detailHtml.includes('full') && detailHtml.includes('thin'))
-check('render detail: consent mark on improved row', detailHtml.includes('✓ consent'))
-check('render detail: ages (today/1d/2d)', detailHtml.includes('today') && detailHtml.includes('1d') && detailHtml.includes('2d'))
-check('render detail: artifact shortened + full in title', detailHtml.includes('p-010203…') && detailHtml.includes('title="p-01020304"'))
+check('render detail: budget card', detailHtml.includes('2/5 fetch_calls') && detailHtml.includes('budget'))
+check('render detail: collapsible cards present',
+  detailHtml.includes('conclusion') && detailHtml.includes('briefing') && detailHtml.includes('pages') && detailHtml.includes('hints'))
+check('render detail: hint preview (collapsed body — session host in preview title)',
+  detailHtml.includes('thinhost.example') || detailHtml.includes('session'))
+check('render detail: pages preview counts', detailHtml.includes('1 full') && detailHtml.includes('2 thin'))
 check('render detail: active → mark done button', detailHtml.includes('mark done'))
 check('render board: active → done chip', boardHtml.includes('>done</') || boardHtml.includes('done'))
-check('render detail: URL shown', detailHtml.includes('https://thinhost.example/p'))
-check('render detail: briefing section', detailHtml.includes('briefing'))
+check('render detail: cards default collapsed', (detailHtml.match(/aria-expanded="false"/g) || []).length >= 3)
 
-const stopped = { ...detail, status: 'stopped', stop_reason: 'no reason given', visited: [], briefing: '# done brief\n' }
+const stopped = { ...detail, status: 'stopped', stop_reason: 'no reason given', visited: [], briefing: '# done brief\n', conclusion: 'final answer' }
 const stoppedHtml = strip(R.renderDetail('m-aaaa1111', stopped))
-check('render detail: stopped → stop reason, NO mark-done, shows briefing',
-  stoppedHtml.includes('stopped: no reason given') && !stoppedHtml.includes('mark done') && stoppedHtml.includes('# done brief') && !stoppedHtml.includes('session thin on'))
-check('render detail: empty visited → empty state', stoppedHtml.includes('no pages yet'))
+check('render detail: stopped → stop reason, NO mark-done',
+  stoppedHtml.includes('no reason given') && stoppedHtml.includes('stopped') && !stoppedHtml.includes('mark done'))
+check('render detail: stopped has conclusion + briefing + pages cards',
+  stoppedHtml.includes('conclusion') && stoppedHtml.includes('briefing') && stoppedHtml.includes('pages'))
+check('render detail: empty visited preview', stoppedHtml.includes('pages') && !stoppedHtml.includes('session thin on'))
 
 const noHint = { ...detail, visited: detail.visited.filter((r) => r.consent_improved !== false) }
-check('render detail: all improved → no hint', !strip(R.renderDetail('m-aaaa1111', noHint)).includes('session thin on'))
+check('render detail: all improved → no hints card', !strip(R.renderDetail('m-aaaa1111', noHint)).includes('>hints<') && !strip(R.renderDetail('m-aaaa1111', noHint)).includes('HINTS'))
 
 // --- hygiene (V4/V5 affordance: clear recents confirm, clear all double-confirm) ---
 const hygieneIdle = R.renderHygiene(null, false)

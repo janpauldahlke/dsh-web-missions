@@ -35,6 +35,8 @@ export interface ClaimCheckResult {
   citations: ClaimCitation[]
   numbers: ClaimNumber[]
   summary: string
+  /** R4.8 — present when 0 citations parsed (hint the expected form). */
+  citation_format_example?: string
 }
 
 export interface ClaimCheckOptions {
@@ -123,10 +125,22 @@ export function checkMissionClaims(
 
   const citeFail = citations.filter((c) => !c.ok).length
   const numFail = numbers.filter((n) => !n.ok).length
-  const ok = citeFail === 0 && numFail === 0
-  const summary = ok
-    ? `claims ok: ${citations.length} citation(s), ${numbers.length} number(s) checked`
-    : `claims failed: ${citeFail} bad citation(s), ${numFail} number(s) not in cited pages`
+  // R4.8: zero parsed citations is NOT silent success — need `[p-…](url)`.
+  const noCites = uniqueCites.length === 0
+  const ok = !noCites && citeFail === 0 && numFail === 0
+  const citeExample = 'expected form: [p-abcd1234](https://example.com/page)'
+  let summary: string
+  if (noCites) {
+    summary =
+      `claims failed: 0 citations parsed in mission.md — ${citeExample}; ` +
+      `cite stored artifact_ids from mission_status.artifacts / mission_read`
+  } else if (ok) {
+    summary = `claims ok: ${citations.length} citation(s), ${numbers.length} number(s) checked`
+  } else {
+    summary =
+      `claims failed: ${citeFail} bad citation(s), ${numFail} number(s) not in cited pages` +
+      (citeFail > 0 ? ` (${citeExample})` : '')
+  }
 
   return {
     ok,
@@ -135,5 +149,6 @@ export function checkMissionClaims(
     citations,
     numbers,
     summary,
+    ...(noCites ? { citation_format_example: citeExample } : {}),
   }
 }

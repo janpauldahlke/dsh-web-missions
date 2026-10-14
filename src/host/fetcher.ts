@@ -181,10 +181,64 @@ const JS_SHELL_MARKERS = [
   'js_required',
 ]
 
+/** CF / bot / maintenance walls (R4.4 — non-retriable even when graded thin). */
+const MAINTENANCE_MARKERS = [
+  'site maintenance',
+  'be right back',
+  'temporarily unavailable',
+  'attention required',
+  'just a moment',
+  'checking your browser',
+  'cf-browser-verification',
+  'cloudflare',
+  'enable javascript and cookies',
+]
+
+/**
+ * Empty / zero-hit JSON bodies must not grade `full` (R4.9).
+ * Returns a signal name when the body is empty JSON or an empty results array.
+ */
+export function emptyJsonSignal(content: string): string | null {
+  const trimmed = content.trim()
+  if (!trimmed) return null
+  // Fast path: only look at JSON-ish payloads.
+  if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return null
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    if (parsed === null) return 'empty_json'
+    if (Array.isArray(parsed)) {
+      return parsed.length === 0 ? 'zero_hits' : null
+    }
+    if (typeof parsed === 'object') {
+      const obj = parsed as Record<string, unknown>
+      const keys = Object.keys(obj)
+      if (keys.length === 0) return 'empty_json'
+      for (const key of ['results', 'items', 'data', 'hits', 'entries']) {
+        const v = obj[key]
+        if (Array.isArray(v) && v.length === 0) return 'zero_hits'
+      }
+      // Object with only null/empty-array/empty-string values.
+      const meaningful = keys.some((k) => {
+        const v = obj[k]
+        if (v === null || v === undefined || v === '') return false
+        if (Array.isArray(v) && v.length === 0) return false
+        if (typeof v === 'object' && v !== null && !Array.isArray(v) && Object.keys(v as object).length === 0) {
+          return false
+        }
+        return true
+      })
+      if (!meaningful) return 'empty_json'
+    }
+  } catch {
+    /* not JSON — fall through */
+  }
+  return null
+}
+
 /**
  * Deterministic quality label (S7: the label is OURS).
  *   blocked: HTTP 4xx/5xx, or zero content (+ js_required when applicable)
- *   thin:    content < thinThresholdChars, or CMP marker in title + first 500 chars
+ *   thin:    content < thinThresholdChars, CMP, maintenance/CF, or empty JSON
  *   full:    otherwise — may still carry soft signals (low_density / js_shell)
  */
 export function assessQuality(opts: {
@@ -196,15 +250,27 @@ export function assessQuality(opts: {
   const { status, title, content, thinThresholdChars } = opts
   const head = `${title} ${content.slice(0, Math.max(CMP_SCAN_CHARS, 2000))}`.toLowerCase()
   const jsHit = JS_SHELL_MARKERS.some((m) => head.includes(m))
+  const maintHit = MAINTENANCE_MARKERS.some((m) => head.includes(m))
 
   if (status >= 400) {
     const signals = [`http-${status}`]
     if (jsHit || status === 403) signals.push('js_required')
+    if (maintHit) signals.push('site_maintenance')
     return { quality: 'blocked', qualitySignals: signals }
   }
   if (content.trim() === '') {
     return { quality: 'blocked', qualitySignals: jsHit ? ['empty-content', 'js_required'] : ['empty-content'] }
   }
+
+  // R4.9: empty / zero-hit JSON is never silent full.
+  const emptySig = emptyJsonSignal(content)
+  if (emptySig) {
+    const signals = [emptySig]
+    if (jsHit) signals.push('js_required')
+    if (maintHit) signals.push('site_maintenance')
+    return { quality: 'thin', qualitySignals: signals }
+  }
+
   const signals: string[] = []
   if (content.length < thinThresholdChars) {
     signals.push(`text<${thinThresholdChars}chars`)
@@ -212,6 +278,8 @@ export function assessQuality(opts: {
   for (const marker of CMP_MARKERS) {
     if (head.includes(marker)) signals.push(`cmp-marker:${marker}`)
   }
+  // R4.4: CF / maintenance walls — thin + non-retriable signal (consumer #3).
+  if (maintHit) signals.push('site_maintenance')
   if (signals.length > 0) {
     if (jsHit) signals.push('js_required')
     return { quality: 'thin', qualitySignals: signals }

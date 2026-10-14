@@ -78,6 +78,12 @@ import {
 } from './consent.ts'
 import { readConfig } from './config.ts'
 import { checkDepthFence, type FenceCheck } from './depth-fence.ts'
+import {
+  hostOnCooldown,
+  isNonRetriable,
+  liftHostCooldown,
+  recordHostOutcome,
+} from './host-cooldown.ts'
 import { normalizeUrl } from './normalize.ts'
 import { FetchError } from './fetcher.ts'
 import { hintTools } from './tool-registry.ts'
@@ -90,6 +96,7 @@ import {
   readManifest,
   resolveMissionId,
   updateFetchedRow,
+  writeHostCooldowns,
   type BudgetView,
   type FetchedRow,
   type Manifest,
@@ -135,6 +142,12 @@ export interface FetchReceipt {
    * (M4); the fetch itself always proceeds.
    */
   hint_find_first?: string
+  /** R4.7 — true when remaining fetch budget is 0 after this attempt. */
+  budget_exhausted?: boolean
+  /** R4.7 — wrap-up hint when budget is exhausted. */
+  wrap_up_hint?: string
+  /** R4.4 — host currently on wiedervorlage cool-down after this outcome. */
+  host_cooldown?: boolean
 }
 
 /** v0 session key (C3): lowercased hostname, no port. */
@@ -162,6 +175,12 @@ export function ageDays(fetchedAt: string, nowMs: number): number {
 }
 
 function nextStepHint(quality: FetchedPage['quality'], signals: string[] = []): string {
+  if (signals.includes('site_maintenance') || signals.some((s) => s.startsWith('cf_'))) {
+    return `host looks under maintenance / CF challenge (quality_signals) — ${DO_NOT_CLAIM}; do not retry this host; pick another source`
+  }
+  if (signals.includes('empty_json') || signals.includes('zero_hits')) {
+    return `empty or zero-hit JSON body — ${DO_NOT_CLAIM}; not useful evidence; try another URL or query`
+  }
   if (signals.includes('js_required') || signals.includes('js_shell')) {
     return `page looks JS-gated or shell-only (quality_signals) — ${DO_NOT_CLAIM}; do not retry this URL; pick another source`
   }
@@ -177,6 +196,11 @@ function nextStepHint(quality: FetchedPage['quality'], signals: string[] = []): 
     case 'blocked':
       return `fetch blocked (see quality_signals) — ${DO_NOT_CLAIM}; do not re-fetch this URL; pick another`
   }
+}
+
+function budgetWrapHint(budget: BudgetView): string | undefined {
+  if (budget.remaining > 0) return undefined
+  return `budget exhausted (0/${budget.max}) — write a conclusion and ${hintTools('mission_stop')}; do not invent more fetches`
 }
 
 /** M3 cached wording (M_3_cache.md hit path, verbatim intent). */
@@ -282,6 +306,20 @@ export async function runFetch(
     maxDiscoveredHosts: manifest.fence?.maxDiscoveredHosts ?? config.maxDiscoveredHosts,
   }
   const fence = checkDepthFence(root, manifest, url, fenceKnobs)
+
+  // 4b′. R4.4 host wiedervorlage — refuse spawn (zero budget) when host is
+  //      cooled down, unless force:true lifts the cool-down for this attempt.
+  const sessionHost = hostSessionKey(url)
+  if (hostOnCooldown(manifest, sessionHost)) {
+    if (force) {
+      manifest = writeHostCooldowns(root, missionId, liftHostCooldown(manifest.host_cooldowns, sessionHost))
+    } else {
+      throw new StoreError(
+        'host_cooldown',
+        `${sessionHost} is on wiedervorlage after repeated non-retriable outcomes — pick another host, or force: true to lift once (0 budget charged)`,
+      )
+    }
+  }
   //
   // 4c. C6 budget gate: a spawn attempt is always CHARGED. Exhausted → hard
   //     stop BEFORE the spawn (D-M5.2: no override; a new mission_start
@@ -290,7 +328,7 @@ export async function runFetch(
   if (budgetExhausted(manifest.budget)) {
     throw new StoreError(
       'budget_exhausted',
-      `${manifest.budget.max} fetch calls used; budget exhausted — start a new mission to continue (no override in v0)`,
+      `${manifest.budget.max} fetch calls used; budget exhausted — write a conclusion and mission_stop (or start a new mission). Remaining=0.`,
     )
   }
   manifest = chargeBudget(root, missionId)
@@ -366,6 +404,23 @@ export async function runFetch(
     ? updateFetchedRow(root, missionId, target.normalized_url, row)
     : appendFetchedRow(root, missionId, row)
 
+  // 6b. R4.4 — record non-retriable / successful-full against host cooldown map.
+  const outcomeHost = (() => {
+    try {
+      return hostSessionKey(page.finalUrl)
+    } catch {
+      return sessionHost
+    }
+  })()
+  const cooldownMap = recordHostOutcome(updated.host_cooldowns, outcomeHost, {
+    nonRetriable: isNonRetriable(page.quality, page.qualitySignals),
+    successfulFull: page.quality === 'full',
+    K: Math.max(1, Math.floor(config.hostCooldownK)),
+    M: Math.max(1, Math.floor(config.hostCooldownLiftAfterM)),
+  })
+  const withCooldown = writeHostCooldowns(root, missionId, cooldownMap)
+  const hostCooled = withCooldown.host_cooldowns?.[outcomeHost]?.cooldown === true
+
   // 7. M3 soft gate (D-M3.3): same-host stored pages, excluding the row this
   //    fetch just wrote/updated (a first-ever page on the host gets no hint).
   const others = manifest.fetched.filter((r) => r !== target)
@@ -382,6 +437,19 @@ export async function runFetch(
       : undefined
 
   // 8. C4 receipt (fresh: cached:false, age_days:0; C6 budget after the charge)
+  const budget = budgetView(withCooldown.budget)
+  const wrap = budgetWrapHint(budget)
+  let hint = honestyGate(
+    consentOutcome?.attempted
+      ? consentNextStepHint(page, consentOutcome)
+      : nextStepHint(page.quality, page.qualitySignals),
+    page.quality,
+  )
+  if (wrap) hint = `${hint} · ${wrap}`
+  if (hostCooled) {
+    hint = `${hint} · host ${outcomeHost} now on wiedervorlage (host_cooldown) — pick another host`
+  }
+
   return {
     mission_id: missionId,
     artifact_id: stored.artifactId,
@@ -399,16 +467,13 @@ export async function runFetch(
     // M5 5.3: live lineage from the depth fence (gate 4b, pre-spawn).
     depth: fence.depth,
     parent_artifact_id: fence.parent_artifact_id,
-    budget: budgetView(manifest.budget),
-    visited_count: updated.fetched.length,
-    next_step_hint: honestyGate(
-      consentOutcome?.attempted
-        ? consentNextStepHint(page, consentOutcome)
-        : nextStepHint(page.quality, page.qualitySignals),
-      page.quality,
-    ),
+    budget,
+    visited_count: withCooldown.fetched.length,
+    next_step_hint: hint,
     sample_links: stored.links.slice(0, sampleCap).map((l) => l.url),
     ...(hintFindFirst ? { hint_find_first: hintFindFirst } : {}),
+    ...(budget.remaining === 0 ? { budget_exhausted: true, wrap_up_hint: wrap } : {}),
+    ...(hostCooled ? { host_cooldown: true } : {}),
   }
 }
 
@@ -426,6 +491,8 @@ function buildHitReceipt(
   const stored = readArtifact(root, missionId, hit.artifact_id)
   const age = ageDays(hit.fetched_at, nowMs)
   const sampleCap = Math.max(0, Math.floor(sampleLinks))
+  const budget = budgetView(manifest.budget)
+  const wrap = budgetWrapHint(budget)
   return {
     mission_id: missionId,
     artifact_id: hit.artifact_id,
@@ -444,13 +511,16 @@ function buildHitReceipt(
     // rows predate the fields → 0/null (schema stability).
     depth: hit.depth ?? 0,
     parent_artifact_id: hit.parent_artifact_id ?? null,
-    budget: budgetView(manifest.budget),
+    budget,
     visited_count: manifest.fetched.length,
     next_step_hint: honestyGate(
-      cachedNextStepHint(stored.page.quality, age, stored.page.qualitySignals ?? []),
+      wrap
+        ? `${cachedNextStepHint(stored.page.quality, age, stored.page.qualitySignals ?? [])} · ${wrap}`
+        : cachedNextStepHint(stored.page.quality, age, stored.page.qualitySignals ?? []),
       stored.page.quality,
     ),
     sample_links: stored.links.slice(0, sampleCap).map((l) => l.url),
+    ...(budget.remaining === 0 ? { budget_exhausted: true, wrap_up_hint: wrap } : {}),
   }
 }
 

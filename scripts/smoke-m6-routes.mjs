@@ -139,7 +139,8 @@ check('setup: ledger rows + two session dirs written', existsSync(join(T, 'sessi
 
 // --- R1: mission list + status (regression through the new handler code) -----
 let r = await dispatch('GET', P + '/missions')
-check('R1 list: 200 with 2 active + 2 recents', r.status === 200 && r.body.active?.length === 2 && r.body.recents?.length === 2, JSON.stringify(r))
+// R4.1: active XOR recent — both missions are active → recents empty.
+check('R1 list: 200 with 2 active + 0 recents (XOR)', r.status === 200 && r.body.active?.length === 2 && r.body.recents?.length === 0, JSON.stringify(r))
 r = await dispatch('GET', P + '/missions/' + ma.mission_id)
 check('R1 status: 200, budget view + visited', r.status === 200 && r.body.budget?.max === 2 && r.body.visited?.length === 2 && r.body.budget?.remaining === 2, JSON.stringify(r.body?.budget))
 r = await dispatch('GET', P + '/missions/m-deadbeef')

@@ -16,7 +16,9 @@ import {
   missionStatus,
   startMission,
   stopMission,
+  amendMissionGoal,
   resolveMissionId,
+  budgetExhausted,
 } from './store.ts'
 import { Browser39Fetcher, FetchError } from './fetcher.ts'
 import { readConfig } from './config.ts'
@@ -227,6 +229,10 @@ export function registerMissionTools(ctx: Context): () => void {
       additionalProperties: false,
       properties: {
         mission_id: { type: 'string', description: 'Mission id (default: most recently started active).' },
+        goal: {
+          type: 'string',
+          description: 'Optional: amend the pinned goal mid-mission (pivot honesty, R4.6).',
+        },
         cwd: CWD_PARAM,
       },
     },
@@ -249,6 +255,9 @@ export function registerMissionTools(ctx: Context): () => void {
           discovery: { type: 'object' },
           mission_md_path: { type: 'string' },
           fence: { type: 'object' },
+          conclusion: { type: 'string' },
+          budget_exhausted: { type: 'boolean' },
+          wrap_up_hint: { type: 'string' },
         },
       },
       render: renderJson,
@@ -256,6 +265,11 @@ export function registerMissionTools(ctx: Context): () => void {
     async execute(args: ToolArgs, exec: ExecLike) {
       try {
         const root = missionRoot(resolveCwd(args, exec))
+        // R4.6: optional mid-mission goal amend via status when `goal` is passed.
+        if (typeof args.goal === 'string' && args.goal.trim()) {
+          const id = resolveMissionId(root, args.mission_id)
+          amendMissionGoal(root, id, args.goal)
+        }
         const status = missionStatus(root, args.mission_id)
         return {
           ...status,
@@ -457,9 +471,9 @@ export function registerMissionTools(ctx: Context): () => void {
   safeRegister({
     name: 'mission_verify',
     description:
-      'Check mission.md claims: citations resolve to full artifacts; numbers appear in cited pages. ' +
-      'when_not_to_use: not a substitute for mission_read. bad_example: stop without verify after writing numbers. ' +
-      'Next: fix mission.md if failed, else mission_stop.',
+      'Check mission.md claims: citations must use [p-…](url) form resolving to full artifacts; numbers appear in cited pages. ' +
+      '0 citations is a failure (not ok). when_not_to_use: not a substitute for mission_read. ' +
+      'bad_example: stop without verify after writing numbers. Next: fix mission.md if failed, else mission_stop.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -500,15 +514,26 @@ export function registerMissionTools(ctx: Context): () => void {
   safeRegister({
     name: 'mission_stop',
     description:
-      'Stop the mission and run a claim check on mission.md (same as mission_verify). ' +
-      'when_not_to_use: do not stop before writing sources. bad_example: stop with invented numbers. ' +
-      'Next: none — mission is frozen.',
+      'Stop the mission with a required conclusion (arg or ## Conclusion / ## Outcome in mission.md), then claim-check. ' +
+      'Optional goal amends a pivot. when_not_to_use: do not stop before writing sources + conclusion. ' +
+      'bad_example: stop with invented numbers / no conclusion. Next: none — mission is frozen.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         mission_id: { type: 'string', description: 'Mission id (default: active).' },
-        reason: { type: 'string', description: 'Why the mission is stopping (optional).' },
+        reason: {
+          type: 'string',
+          description: 'Why stopping (optional). Use budget_exhausted when remaining was 0.',
+        },
+        conclusion: {
+          type: 'string',
+          description: 'Required answer / outcome (or write ## Conclusion in mission.md).',
+        },
+        goal: {
+          type: 'string',
+          description: 'Optional goal amend at stop (records a pivot, R4.6).',
+        },
         cwd: CWD_PARAM,
       },
     },
@@ -522,6 +547,7 @@ export function registerMissionTools(ctx: Context): () => void {
           mission_id: { type: 'string' },
           status: { type: 'string' },
           stop_reason: { type: 'string' },
+          conclusion: { type: 'string' },
           updated_at: { type: 'string' },
           already_stopped: { type: 'boolean' },
           claims: { type: 'object' },
@@ -535,7 +561,19 @@ export function registerMissionTools(ctx: Context): () => void {
         const root = missionRoot(resolveCwd(args, exec))
         const config = readConfig(root)
         const id = resolveMissionId(root, args.mission_id)
-        const { manifest, already_stopped } = stopMission(root, id, args.reason)
+        // Prefer explicit reason; if budget is exhausted and no reason, stamp it.
+        let reason = typeof args.reason === 'string' ? args.reason : undefined
+        try {
+          const pre = missionStatus(root, id)
+          if (!reason && budgetExhausted({ max: pre.budget.max, spent: pre.budget.spent })) {
+            reason = 'budget_exhausted'
+          }
+        } catch { /* ignore — stop will fail loud if mission missing */ }
+        const { manifest, already_stopped } = stopMission(root, id, {
+          reason,
+          conclusion: typeof args.conclusion === 'string' ? args.conclusion : undefined,
+          goal: typeof args.goal === 'string' ? args.goal : undefined,
+        })
         let claims
         try {
           claims = checkMissionClaims(root, id, { numberFormatCheck: config.numberFormatCheck })
@@ -553,6 +591,7 @@ export function registerMissionTools(ctx: Context): () => void {
           mission_id: manifest.mission_id,
           status: manifest.status,
           stop_reason: manifest.stop_reason,
+          conclusion: manifest.conclusion ?? null,
           updated_at: manifest.updated_at,
           already_stopped,
           claims,

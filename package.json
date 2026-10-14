@@ -30,7 +30,8 @@
     "build": "node build.mjs && tsc --noEmit",
     "smoke:tool-face": "node build.mjs && node scripts/smoke-tool-face.mjs",
     "smoke:untrusted": "node scripts/smoke-untrusted.mjs",
-    "smoke:pane": "node scripts/smoke-m6-pane.mjs"
+    "smoke:pane": "node scripts/smoke-m6-pane.mjs",
+    "smoke:r4": "node scripts/smoke-r4.mjs"
   },
   "keywords": [
     "dsh-plugin",

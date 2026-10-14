@@ -98,6 +98,15 @@ writeFileSync(missionMdPath(root, mid), \`# Mission
 const bad = checkMissionClaims(root, mid)
 check('claims: invented number fails', bad.ok === false && bad.numbers.some((n) => !n.ok), bad.summary)
 
+// R4.8: zero citations is NOT silent ok
+writeFileSync(missionMdPath(root, mid), \`# Mission
+### ExampleCo
+- **Key numbers:** none cited
+\`)
+const zero = checkMissionClaims(root, mid)
+check('claims: 0 cites fails', zero.ok === false && /0 citations/.test(zero.summary), zero.summary)
+check('claims: format example present', typeof zero.citation_format_example === 'string' && /\\[p-/.test(zero.citation_format_example), zero.citation_format_example)
+
 console.log(fail === 0 ? 'smoke-read-claims: ALL GREEN' : 'smoke-read-claims: ' + fail + ' FAILURES')
 process.exit(fail === 0 ? 0 : 1)
 `

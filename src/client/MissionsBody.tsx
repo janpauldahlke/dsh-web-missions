@@ -1,18 +1,10 @@
 /**
- * The Missions pane body (M6 6.2): the operator surface.
+ * The Missions pane body (M6 6.2 + R4): the operator surface.
  *
- * - Board: active missions first (note, started, visited, budget), then
- *   recents (note, status, updated). Click a mission → detail.
- * - Detail: briefing (mission.md), visited list, budget, mark-done
- *   (POST …/:id/stop), cookie/session hint when thin+attempted-not-improved.
- * - Board: mark-done on active rows (R3.0). Detail URL must use
- *   missionApiPath (MISSIONS_ID_PREFIX has no trailing slash — V1.5 scar).
- * - Data: only the M1–M6 host routes (GET /missions, GET /missions/:id,
- *   POST /missions/:id/stop, POST /recents/clear, POST /clear-all).
- *   Initial load + refetch after actions; the board re-syncs every 15 s
- *   while the pane is mounted and the browser tab is visible (M6 6.4,
- *   D-M6.1) — the poller is disposed on unmount (no orphan timers, no
- *   global timers).
+ * - Board: active XOR recent; discovery badge; store cwd from active chat.
+ * - Detail: conclusion leads; briefing collapsible; mark-done stub conclusion.
+ * - R4.0: seat props (sessionId + useSessions) pin the store to the open
+ *   workspace cwd on tab open (long-horizon / memento pattern).
  *
  * Inline styles only (no CSS pipeline). Runtime imports: react (+jsx-runtime)
  * and the local modules — the platform baseline for the CJS bundle.
@@ -21,16 +13,19 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import {
   CLEAR_ALL_ROUTE,
+  HEALTH_ROUTE,
   MISSIONS_ROUTE,
   RECENTS_CLEAR_ROUTE,
   missionApiPath,
   type ClearAllPayload,
+  type HealthPayload,
   type ListPayload,
   type MissionSummaryPayload,
   type RecentsClearedPayload,
   type StatusPayload,
   type StopPayload,
 } from '../shared/types.ts'
+import { CollapsibleCard } from './CollapsibleCard.tsx'
 import {
   budgetExhausted,
   budgetLine,
@@ -45,13 +40,55 @@ import { POLL_INTERVAL_MS, createPoller } from './pollModel.ts'
 
 type View = { kind: 'board' } | { kind: 'detail'; missionId: string }
 
+/** Session store selector shape (framework seat prop — same as long-horizon). */
+type UseSessions = <T>(selector: (state: {
+  byId: Record<string, { cwd?: string | null } | undefined>
+}) => T) => T
+
+function useNoopSessions<T>(selector: (state: { byId: Record<string, never> }) => T): T {
+  return selector({ byId: {} })
+}
+
 async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
   const res = await fetch(url, init)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 
-export function MissionsBody(): ReactNode {
+function withCwd(path: string, cwd: string | null): string {
+  if (!cwd) return path
+  const sep = path.includes('?') ? '&' : '?'
+  return `${path}${sep}cwd=${encodeURIComponent(cwd)}`
+}
+
+/** Store path for the quiet chrome line — full path stays in title. */
+function shortStore(cwd: string): string {
+  const parts = cwd.split('/').filter(Boolean)
+  if (parts.length <= 2) return cwd.startsWith('/') ? cwd : parts.join('/')
+  return `…/${parts.slice(-2).join('/')}`
+}
+
+/**
+ * Color grammar (final):
+ * - Pane chrome + labels stay neutral. Color = signal, not decoration.
+ * - Green: conclusion delivered · page quality "full".
+ * - Amber: conclusion missing after stop · page "thin" · hints (attention).
+ * - Red: page "blocked" · budget exhausted.
+ * - Active/stopped status pills stay grey/slate (lifecycle, not quality).
+ * Preview chips only color when the chip itself is a quality/exhaustion signal.
+ */
+
+export function MissionsBody(props: {
+  sessionId?: string
+  useSessions?: UseSessions
+} = {}): ReactNode {
+  const { sessionId, useSessions = useNoopSessions } = props
+  const sessionCwd = useSessions((sessions) => {
+    if (!sessionId) return null
+    const cwd = sessions.byId[sessionId]?.cwd
+    return typeof cwd === 'string' && cwd.trim() ? cwd.trim() : null
+  })
+
   const [list, setList] = useState<ListPayload | null>(null)
   const [listError, setListError] = useState<string | null>(null)
   const [detail, setDetail] = useState<StatusPayload | null>(null)
@@ -59,16 +96,28 @@ export function MissionsBody(): ReactNode {
   const [view, setView] = useState<View>({ kind: 'board' })
   const [stopping, setStopping] = useState(false)
   const [lastSync, setLastSync] = useState<string | null>(null)
+  const [discovery, setDiscovery] = useState<'on' | 'off' | null>(null)
 
   const sync = useCallback(async () => {
     try {
-      const data = (await fetchJson(MISSIONS_ROUTE)) as ListPayload
+      const data = (await fetchJson(withCwd(MISSIONS_ROUTE, sessionCwd))) as ListPayload
       setList(data)
       setListError(null)
       setLastSync(new Date().toISOString())
+      if (data.discovery === 'on' || data.discovery === 'off') setDiscovery(data.discovery)
     } catch (error) {
       setListError(error instanceof Error ? error.message : String(error))
     }
+  }, [sessionCwd])
+
+  // Health probe for discovery badge when list has not reported yet.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const h = (await fetchJson(HEALTH_ROUTE)) as HealthPayload
+        if (h.discovery === 'on' || h.discovery === 'off') setDiscovery(h.discovery)
+      } catch { /* list sync will retry */ }
+    })()
   }, [])
 
   useEffect(() => {
@@ -104,7 +153,7 @@ export function MissionsBody(): ReactNode {
       setDetail(null)
       setDetailError(null)
       try {
-        const data = (await fetchJson(missionApiPath(missionId))) as StatusPayload
+        const data = (await fetchJson(withCwd(missionApiPath(missionId), sessionCwd))) as StatusPayload
         if (token === detailToken.current) setDetail(data)
       } catch (error) {
         if (token === detailToken.current) {
@@ -112,22 +161,25 @@ export function MissionsBody(): ReactNode {
         }
       }
     },
-    [],
+    [sessionCwd],
   )
 
-  /** Mark done / stop — works from detail or an active board row (R3.0). */
+  /** Mark done / stop — works from detail or an active board row (R3.0 / R4.3 stub). */
   const markDone = useCallback(async (missionId: string, reason?: string) => {
     if (stopping) return
     setStopping(true)
     try {
-      const data = (await fetchJson(missionApiPath(missionId, 'stop'), {
+      const data = (await fetchJson(withCwd(missionApiPath(missionId, 'stop'), sessionCwd), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ reason: reason ?? 'marked done from pane' }),
+        body: JSON.stringify({
+          reason: reason ?? 'marked done from pane',
+          from_pane: true,
+        }),
       })) as StopPayload
       if (data.ok && view.kind === 'detail' && view.missionId === missionId) {
         const token = ++detailToken.current
-        const refreshed = (await fetchJson(missionApiPath(missionId))) as StatusPayload
+        const refreshed = (await fetchJson(withCwd(missionApiPath(missionId), sessionCwd))) as StatusPayload
         if (token === detailToken.current) setDetail(refreshed)
       }
     } catch {
@@ -136,7 +188,7 @@ export function MissionsBody(): ReactNode {
       setStopping(false)
       await sync()
     }
-  }, [view, stopping, sync])
+  }, [view, stopping, sync, sessionCwd])
 
   // --- M6 6.3: hygiene actions -------------------------------------------
   const [clearNote, setClearNote] = useState<string | null>(null)
@@ -203,22 +255,33 @@ export function MissionsBody(): ReactNode {
 
   const hint = view.kind === 'detail' && detail ? sessionHint(detail.visited) : null
 
+  const syncLabel = lastSync
+    ? new Date(lastSync).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    : null
+
   return (
     <div style={styles.root}>
-      <h2 style={styles.heading}>Missions</h2>
-      <p style={listError ? styles.statusError : styles.status}>
-        {listError
-          ? `host: unreachable (${listError})`
-          : lastSync
-            ? `host: ok · updated ${new Date(lastSync).toLocaleTimeString()}`
-            : 'host: …'}
-      </p>
-      {list?.cwd && (
-        <p style={styles.cwdLine} title={list.root ?? list.cwd}>
-          store: {list.cwd}
-          {typeof list.store_bytes === 'number' ? ` · ${formatBytes(list.store_bytes)}` : ''}
-        </p>
-      )}
+      <div style={styles.paneChrome}>
+        <h2 style={styles.heading}>Missions</h2>
+        {listError ? (
+          <p style={styles.statusError}>unreachable · {listError}</p>
+        ) : (
+          <div style={styles.chromeMeta} title={list?.root ?? list?.cwd ?? undefined}>
+            <span style={styles.chromeQuiet}>
+              {[
+                syncLabel ? `updated ${syncLabel}` : null,
+                discovery ? `discovery ${discovery}` : null,
+              ].filter(Boolean).join(' · ') || 'syncing…'}
+            </span>
+            {list?.cwd ? (
+              <span style={styles.chromeStore} title={list.cwd}>
+                {shortStore(list.cwd)}
+                {typeof list.store_bytes === 'number' ? ` · ${formatBytes(list.store_bytes)}` : ''}
+              </span>
+            ) : null}
+          </div>
+        )}
+      </div>
 
       {view.kind === 'board' ? (
         <div>
@@ -271,7 +334,14 @@ export function Board({
   return (
     <div>
       {list.active.length > 0 && (
-        <Section title={`active (${list.active.length})`}>
+        <CollapsibleCard
+          storageKey="wm-board-active"
+          label="active"
+          defaultExpanded={list.active.length <= 3}
+          headerTitle="Active missions"
+          preview={[{ text: `${list.active.length}`, title: 'active count' }]}
+          bodyMaxHeight={220}
+        >
           {list.active.map((row) => (
             <Row key={row.mission_id} onClick={() => onOpen(row.mission_id)}>
               <div style={styles.rowTop}>
@@ -299,10 +369,16 @@ export function Board({
               </RowMeta>
             </Row>
           ))}
-        </Section>
+        </CollapsibleCard>
       )}
       {list.recents.length > 0 && (
-        <Section title={`recent (${list.recents.length})`}>
+        <CollapsibleCard
+          storageKey="wm-board-recents"
+          label="recent"
+          headerTitle="Stopped / done missions"
+          preview={[{ text: `${list.recents.length}`, title: 'recent count' }]}
+          bodyMaxHeight={220}
+        >
           {list.recents.map((row) => (
             <Row key={row.mission_id} onClick={() => onOpen(row.mission_id)}>
               <div style={styles.rowTop}>
@@ -328,7 +404,7 @@ export function Board({
               </RowMeta>
             </Row>
           ))}
-        </Section>
+        </CollapsibleCard>
       )}
     </div>
   )
@@ -430,26 +506,50 @@ export function Detail({
 }): ReactNode {
   const briefing = detail?.briefing?.trim() ?? ''
   const hasBriefing = briefing.length > 0
+  const conclusion = detail?.conclusion?.trim() ?? ''
+  const cooled = detail?.host_cooldowns
+    ? Object.entries(detail.host_cooldowns).filter(([, e]) => e.cooldown).map(([h]) => h)
+    : []
+  const exhausted = detail ? (detail.budget_exhausted || budgetExhausted(detail.budget)) : false
+  const sk = (suffix: string) => `wm-detail-${missionId}-${suffix}`
+  const fullCount = detail?.visited.filter((v) => v.quality === 'full').length ?? 0
+  const thinCount = detail?.visited.filter((v) => v.quality === 'thin').length ?? 0
+  const blockedCount = detail?.visited.filter((v) => v.quality === 'blocked').length ?? 0
+  // Conclusion: green = delivered; amber only if stopped with nothing written.
+  const conclusionTone = conclusion
+    ? 'ok'
+    : detail?.status === 'stopped'
+      ? 'warn'
+      : 'na'
+  const hintCount = (hint ? 1 : 0) + cooled.length
+
   return (
-    <div>
+    <div style={styles.detailRoot}>
       <button type="button" style={styles.backButton} onClick={onBack}>
         ← board
       </button>
       <div style={styles.detailHeader}>
         <span style={styles.detailNote}>{detail?.note ?? '…'}</span>
-        {detail && (
-          <span style={detail.status === 'active' ? styles.statusActive : styles.statusStopped}>
-            {detail.status}
-          </span>
-        )}
+        <span style={styles.detailHeaderActions}>
+          {detail && (
+            <span
+              style={detail.status === 'active' ? styles.statusActive : styles.statusStopped}
+              title={detail.status === 'active' ? 'Mission running' : 'Mission stopped'}
+            >
+              {detail.status}
+            </span>
+          )}
+          {detail?.status === 'active' && (
+            <button type="button" style={styles.stopButtonHeader} onClick={onMarkDone} disabled={stopping}>
+              {stopping ? '…' : 'mark done'}
+            </button>
+          )}
+        </span>
       </div>
-      <p style={styles.detailMeta}>
-        {missionId}
-        {detail?.stop_reason ? ` · stopped: ${detail.stop_reason}` : ''}
-      </p>
-      {detail?.goal ? (
-        <p style={styles.goalLine} title="Pinned goal (R3.2)">
-          goal: {detail.goal}
+      <p style={styles.detailId} title={missionId}>{missionId}</p>
+      {detail?.stop_reason ? (
+        <p style={styles.outcomeLine} title={detail.stop_reason}>
+          {detail.stop_reason}
         </p>
       ) : null}
 
@@ -458,32 +558,93 @@ export function Detail({
 
       {detail && (
         <>
-          <p style={budgetExhausted(detail.budget) ? styles.budgetExhausted : styles.budgetLine}>
-            budget {budgetLine(detail.budget)}
-            {detail.fence
-              ? ` · fence depth≤${detail.fence.maxDepth} hosts≤${detail.fence.maxDiscoveredHosts}`
-              : ''}
-          </p>
-          {hint && <p style={styles.hint}>{hint}</p>}
-          {detail.status === 'active' && (
-            <button type="button" style={styles.stopButton} onClick={onMarkDone} disabled={stopping}>
-              {stopping ? 'marking done…' : 'mark done'}
-            </button>
-          )}
+          {/* Answer-first order: goal → conclusion → briefing → pages → budget → hints */}
+          {detail.goal ? (
+            <CollapsibleCard
+              storageKey={sk('goal')}
+              label="goal"
+              headerTitle="Pinned research goal"
+              preview={[{
+                text: detail.goal.length > 48 ? `${detail.goal.slice(0, 48)}…` : detail.goal,
+                title: detail.goal,
+              }]}
+              bodyMaxHeight={120}
+            >
+              <p style={styles.goalScroll}>{detail.goal}</p>
+            </CollapsibleCard>
+          ) : null}
 
-          <Section title="briefing">
+          <CollapsibleCard
+            storageKey={sk('conclusion')}
+            label="conclusion"
+            tone={conclusionTone}
+            headerTitle={
+              conclusion
+                ? 'Green = delivered answer'
+                : detail.status === 'stopped'
+                  ? 'Amber = stopped with no conclusion'
+                  : 'No conclusion yet'
+            }
+            accent={
+              conclusion
+                ? { text: 'delivered', color: 'color-mix(in srgb, #22c55e 70%, currentColor)' }
+                : detail.status === 'stopped'
+                  ? { text: 'missing', color: 'color-mix(in srgb, #fbbf24 75%, currentColor)' }
+                  : undefined
+            }
+            preview={[{
+              text: conclusion
+                ? (conclusion.length > 40 ? `${conclusion.replace(/\s+/g, ' ').slice(0, 40)}…` : conclusion.replace(/\s+/g, ' '))
+                : '—',
+              title: conclusion || 'no conclusion yet',
+            }]}
+            bodyMaxHeight={220}
+          >
+            {conclusion ? (
+              <pre style={styles.conclusion}>{conclusion}</pre>
+            ) : (
+              <p style={styles.empty}>
+                {detail.status === 'active'
+                  ? 'no conclusion yet — mission_stop({ conclusion }) or ## Conclusion in mission.md'
+                  : 'no conclusion recorded'}
+              </p>
+            )}
+          </CollapsibleCard>
+
+          <CollapsibleCard
+            storageKey={sk('briefing')}
+            label="briefing"
+            headerTitle="Full mission.md"
+            meta={{ text: 'mission.md', title: detail.mission_md_path }}
+            preview={[{
+              text: hasBriefing ? `${Math.min(briefing.length, 9999)} chars` : 'empty',
+              title: hasBriefing ? 'mission.md body length' : 'no briefing yet',
+            }]}
+            bodyMaxHeight={200}
+          >
             {hasBriefing ? (
               <pre style={styles.briefing}>{briefing}</pre>
             ) : (
               <p style={styles.empty}>no briefing yet — mission.md is empty</p>
             )}
-          </Section>
+          </CollapsibleCard>
 
-          <Section title={`pages (${detail.visited.length})`}>
+          <CollapsibleCard
+            storageKey={sk('pages')}
+            label="pages"
+            headerTitle="Chip colors = fetch quality (full / thin / blocked)"
+            preview={[
+              { text: `${detail.visited.length}`, title: 'visited count' },
+              ...(fullCount ? [{ text: `${fullCount} full`, title: 'quality: full', tone: 'ok' as const }] : []),
+              ...(thinCount ? [{ text: `${thinCount} thin`, title: 'quality: thin', tone: 'warn' as const }] : []),
+              ...(blockedCount ? [{ text: `${blockedCount} blocked`, title: 'quality: blocked', tone: 'crit' as const }] : []),
+            ]}
+            bodyMaxHeight={240}
+          >
             {detail.visited.length === 0 ? (
               <p style={styles.empty}>no pages yet</p>
             ) : (
-              <div style={styles.visitedList}>
+              <div style={styles.visitedListInner}>
                 {detail.visited.map((row) => {
                   const badge = qualityBadge(row.quality)
                   return (
@@ -494,16 +655,80 @@ export function Detail({
                       <span style={styles.visitedUrl} title={row.url}>
                         {row.url}
                       </span>
-                      <span style={styles.visitedMeta}>
-                        {formatAge(row.fetched_at)} · <span style={styles.artifactId} title={row.artifact_id}>{shortArtifact(row.artifact_id)}</span>
+                      <div style={styles.visitedMeta}>
+                        {formatAge(row.fetched_at)} ·{' '}
+                        <span style={styles.artifactId} title={row.artifact_id}>{shortArtifact(row.artifact_id)}</span>
                         {row.consent_improved === true && <span style={styles.consentMark}> ✓ consent</span>}
-                      </span>
+                      </div>
                     </div>
                   )
                 })}
               </div>
             )}
-          </Section>
+          </CollapsibleCard>
+
+          <CollapsibleCard
+            storageKey={sk('budget')}
+            label="budget"
+            tone={exhausted ? 'crit' : 'na'}
+            headerTitle={exhausted ? 'Red = fetch budget exhausted' : 'Fetch budget + depth/host fence'}
+            accent={
+              exhausted
+                ? { text: 'exhausted', color: 'color-mix(in srgb, #f87171 80%, currentColor)' }
+                : undefined
+            }
+            preview={[
+              {
+                text: budgetLine(detail.budget),
+                title: 'remaining / max fetch_calls',
+                tone: exhausted ? 'crit' : 'na',
+              },
+              ...(detail.fence
+                ? [{
+                    text: `d≤${detail.fence.maxDepth} h≤${detail.fence.maxDiscoveredHosts}`,
+                    title: 'depth fence · max discovered hosts',
+                  }]
+                : []),
+            ]}
+            bodyMaxHeight={100}
+          >
+            <p style={exhausted ? styles.budgetBodyExhausted : styles.budgetCardBody}>
+              {budgetLine(detail.budget)}
+              {detail.fence
+                ? ` · fence depth≤${detail.fence.maxDepth} hosts≤${detail.fence.maxDiscoveredHosts}`
+                : ''}
+            </p>
+            {exhausted && (
+              <p style={{ ...styles.hint, marginTop: 6, marginBottom: 0 }}>
+                {detail.wrap_up_hint ??
+                  'budget exhausted — write a conclusion and stop; do not invent more fetches'}
+              </p>
+            )}
+          </CollapsibleCard>
+
+          {(cooled.length > 0 || hint) && (
+            <CollapsibleCard
+              storageKey={sk('hints')}
+              label="hints"
+              tone="warn"
+              headerTitle="Amber = needs attention (session walls / host cooldown)"
+              accent={{ text: 'attention', color: 'color-mix(in srgb, #fbbf24 75%, currentColor)' }}
+              preview={[{
+                text: hintCount === 1 ? '1 note' : `${hintCount} notes`,
+                title: [hint, ...cooled.map((h) => `cooldown:${h}`)].filter(Boolean).join('\n'),
+              }]}
+              bodyMaxHeight={160}
+            >
+              <div style={styles.hintsStack}>
+                {cooled.map((host) => (
+                  <div key={host} style={styles.hintBlock}>
+                    host cooldown: {host}
+                  </div>
+                ))}
+                {hint ? <div style={styles.hintBlock}>{hint}</div> : null}
+              </div>
+            </CollapsibleCard>
+          )}
         </>
       )}
     </div>
@@ -511,10 +736,51 @@ export function Detail({
 }
 
 const styles: Record<string, CSSProperties> = {
-  root: { padding: 12, fontFamily: 'inherit', fontSize: 13, lineHeight: 1.5 },
-  heading: { margin: '0 0 6px', fontSize: 15, fontWeight: 600 },
+  /* R5.U1 — pane scrolls inside the sidebar instead of growing forever */
+  root: {
+    padding: 12,
+    fontFamily: 'inherit',
+    fontSize: 13,
+    lineHeight: 1.5,
+    height: '100%',
+    minHeight: 0,
+    boxSizing: 'border-box',
+    overflowY: 'auto',
+    overflowX: 'hidden',
+  },
+  detailRoot: {
+    minHeight: 0,
+  },
+  paneChrome: {
+    marginBottom: 10,
+    paddingBottom: 8,
+    borderBottom: '1px solid color-mix(in srgb, currentColor 10%, transparent)',
+  },
+  heading: { margin: '0 0 4px', fontSize: 15, fontWeight: 600 },
+  chromeMeta: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: '4px 8px',
+    fontSize: 11,
+    lineHeight: 1.35,
+  },
+  chromeQuiet: {
+    opacity: 0.48,
+    fontVariantNumeric: 'tabular-nums',
+    fontSize: 11,
+  },
+  chromeStore: {
+    opacity: 0.4,
+    fontFamily: 'ui-monospace, monospace',
+    fontSize: 10.5,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    maxWidth: '100%',
+  },
   status: { margin: '0 0 4px', opacity: 0.75, fontSize: 12 },
-  statusError: { margin: '0 0 10px', color: '#f87171', fontSize: 12 },
+  statusError: { margin: '0 0 4px', color: '#f87171', fontSize: 12 },
   cwdLine: {
     margin: '0 0 10px',
     fontSize: 11,
@@ -528,6 +794,23 @@ const styles: Record<string, CSSProperties> = {
   empty: { margin: 0, opacity: 0.55, fontStyle: 'italic' },
   section: { marginBottom: 12 },
   sectionTitle: { fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.55, margin: '0 0 4px' },
+  /* R5.U1 — shared scroll shells for any unit that can grow */
+  boardScroll: {
+    maxHeight: 220,
+    overflowY: 'auto',
+    overflowX: 'hidden',
+  },
+  cardScroll: {
+    maxHeight: 180,
+    overflowY: 'auto',
+    overflowX: 'hidden',
+  },
+  hintsScroll: {
+    maxHeight: 120,
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    marginBottom: 8,
+  },
   row: {
     padding: '6px 8px',
     borderRadius: 6,
@@ -556,6 +839,19 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: 1.4,
     opacity: 0.85,
   },
+  conclusion: {
+    margin: 0,
+    padding: '10px 12px',
+    borderRadius: 6,
+    border: '1px solid color-mix(in srgb, #22c55e 28%, transparent)',
+    background: 'color-mix(in srgb, #22c55e 7%, transparent)',
+    fontSize: 12.5,
+    lineHeight: 1.55,
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    fontWeight: 400,
+    fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+  },
   briefing: {
     margin: 0,
     padding: '8px 10px',
@@ -566,13 +862,60 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: 1.45,
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
-    maxHeight: 320,
-    overflow: 'auto',
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
   },
   budgetOk: { color: '#3f6212' },
   budgetExhausted: { color: '#b91c1c', fontWeight: 600 },
   budgetLine: { margin: '0 0 8px' },
+  budgetCard: {
+    margin: '0 0 10px',
+    padding: '8px 10px',
+    borderRadius: 6,
+    border: '1px solid rgba(128,128,128,0.22)',
+    background: 'color-mix(in srgb, currentColor 5%, transparent)',
+  },
+  budgetCardExhausted: {
+    margin: '0 0 10px',
+    padding: '8px 10px',
+    borderRadius: 6,
+    border: '1px solid rgba(185,28,28,0.4)',
+    background: '#fee2e2',
+  },
+  budgetCardTitle: {
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    opacity: 0.55,
+    marginBottom: 2,
+  },
+  budgetCardBody: {
+    fontSize: 12.5,
+    fontWeight: 500,
+    maxHeight: 72,
+    overflowY: 'auto',
+  },
+  budgetBodyExhausted: {
+    fontSize: 12.5,
+    fontWeight: 600,
+    color: '#b91c1c',
+    maxHeight: 72,
+    overflowY: 'auto',
+  },
+  goalCard: {
+    margin: '0 0 8px',
+    padding: '6px 8px',
+    borderRadius: 6,
+    background: 'color-mix(in srgb, currentColor 5%, transparent)',
+    border: '1px solid rgba(128,128,128,0.15)',
+  },
+  goalScroll: {
+    fontSize: 12,
+    opacity: 0.9,
+    maxHeight: 72,
+    overflowY: 'auto',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+  },
   backButton: {
     background: 'none',
     border: 'none',
@@ -583,40 +926,75 @@ const styles: Record<string, CSSProperties> = {
     color: 'inherit',
     opacity: 0.7,
   },
-  detailHeader: { display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' },
-  detailNote: { fontWeight: 600 },
+  detailHeader: {
+    display: 'flex',
+    gap: 8,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+  },
+  detailHeaderActions: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 0,
+  },
+  detailNote: { fontWeight: 600, flex: 1, minWidth: 0 },
+  /* Lifecycle only — not quality green (that is reserved for conclusion/pages). */
   statusActive: {
-    fontSize: 11,
-    padding: '1px 6px',
-    borderRadius: 8,
-    color: '#14532d',
-    background: '#dcfce7',
+    fontSize: 10.5,
+    fontWeight: 600,
+    padding: '1px 7px',
+    borderRadius: 6,
+    color: 'color-mix(in srgb, currentColor 78%, transparent)',
+    background: 'color-mix(in srgb, currentColor 10%, transparent)',
+    lineHeight: 1.4,
   },
   statusStopped: {
-    fontSize: 11,
-    padding: '1px 6px',
-    borderRadius: 8,
-    color: '#525252',
-    background: '#e5e5e5',
+    fontSize: 10.5,
+    fontWeight: 600,
+    padding: '1px 7px',
+    borderRadius: 6,
+    color: 'color-mix(in srgb, currentColor 55%, transparent)',
+    background: 'color-mix(in srgb, currentColor 8%, transparent)',
+    lineHeight: 1.4,
   },
   detailMeta: { margin: '2px 0 8px', fontSize: 11.5, opacity: 0.65, fontFamily: 'ui-monospace, monospace' },
-  goalLine: {
-    margin: '0 0 8px',
-    fontSize: 12,
-    opacity: 0.85,
-    padding: '4px 8px',
-    borderRadius: 6,
-    background: 'color-mix(in srgb, currentColor 5%, transparent)',
-    border: '1px solid rgba(128,128,128,0.15)',
+  detailId: {
+    margin: '2px 0 2px',
+    fontSize: 10.5,
+    opacity: 0.42,
+    fontFamily: 'ui-monospace, monospace',
   },
+  outcomeLine: {
+    margin: '0 0 12px',
+    fontSize: 12,
+    lineHeight: 1.45,
+    opacity: 0.68,
+    display: '-webkit-box',
+    WebkitLineClamp: 3,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
+  } as CSSProperties,
   detailError: { color: '#f87171', fontSize: 12 },
   hint: {
-    margin: '0 0 8px',
+    margin: '0 0 6px',
     padding: '6px 8px',
     borderRadius: 6,
     fontSize: 12,
     color: '#92400e',
     background: '#fef3c7',
+  },
+  stopButtonHeader: {
+    padding: '2px 8px',
+    borderRadius: 6,
+    border: '1px solid rgba(185,28,28,0.4)',
+    background: '#fee2e2',
+    color: '#991b1b',
+    cursor: 'pointer',
+    fontSize: 11,
+    lineHeight: 1.4,
+    flexShrink: 0,
   },
   stopButton: {
     marginTop: 4,
@@ -667,17 +1045,40 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 12,
   },
   hygieneNote: { margin: 0, width: '100%', fontSize: 11.5, opacity: 0.8 },
-  visitedList: { marginTop: 6 },
+  visitedListInner: { margin: 0 },
   visitedRow: {
     display: 'flex',
+    flexWrap: 'wrap',
     gap: 6,
     alignItems: 'baseline',
-    padding: '4px 0',
+    padding: '6px 0',
     borderBottom: '1px solid rgba(128,128,128,0.12)',
   },
   qualityBadge: { fontSize: 10.5, padding: '1px 6px', borderRadius: 8, whiteSpace: 'nowrap' },
-  visitedUrl: { flex: 1, wordBreak: 'break-all', fontSize: 12 },
-  visitedMeta: { fontSize: 11, opacity: 0.7, whiteSpace: 'nowrap' },
+  visitedUrl: { flex: '1 1 100%', wordBreak: 'break-all', fontSize: 12 },
+  visitedMeta: {
+    flex: '1 1 100%',
+    fontSize: 11,
+    opacity: 0.7,
+    display: 'block',
+  },
   artifactId: { fontFamily: 'ui-monospace, monospace' },
   consentMark: { color: '#14532d' },
+  hintsStack: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
+  hintBlock: {
+    display: 'block',
+    margin: 0,
+    padding: '6px 8px',
+    borderRadius: 6,
+    fontSize: 12,
+    lineHeight: 1.45,
+    color: '#92400e',
+    background: '#fef3c7',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+  },
 }

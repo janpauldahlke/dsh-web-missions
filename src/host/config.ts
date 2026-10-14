@@ -57,6 +57,16 @@ export interface MissionConfig {
   markUntrustedText: boolean
   /** Opt-in: drop instruction-like lines from page text (R3.5, default false). */
   stripInstructionLike: boolean
+  /**
+   * Host wiedervorlage (R4.4): after this many non-retriable outcomes on host H,
+   * further fetches to H refuse with `host_cooldown` (default 2).
+   */
+  hostCooldownK: number
+  /**
+   * Host wiedervorlage (R4.4): lift H's cooldown after this many successful
+   * full fetches on *other* hosts (default 2).
+   */
+  hostCooldownLiftAfterM: number
 }
 
 export const CONFIG_FILENAME = 'config.json'
@@ -89,6 +99,8 @@ export const DEFAULT_CONFIG: MissionConfig = {
   numberFormatCheck: true,
   markUntrustedText: true,
   stripInstructionLike: false,
+  hostCooldownK: 2,
+  hostCooldownLiftAfterM: 2,
 }
 
 type FieldSpec =
@@ -118,6 +130,8 @@ const FIELDS: FieldSpec[] = [
   { key: 'numberFormatCheck', kind: 'boolean' },
   { key: 'markUntrustedText', kind: 'boolean' },
   { key: 'stripInstructionLike', kind: 'boolean' },
+  { key: 'hostCooldownK', kind: 'number' },
+  { key: 'hostCooldownLiftAfterM', kind: 'number' },
 ]
 
 export function configPath(root: string): string {

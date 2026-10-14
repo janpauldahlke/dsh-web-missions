@@ -232,7 +232,7 @@ const ctx = {
 lib.apply(ctx)
 const byName = {}
 for (const t of tools) byName[t.name] = t
-check('tools: 6 registered', Object.keys(byName).length === 6, JSON.stringify(Object.keys(byName)))
+check('tools: 8 registered', Object.keys(byName).length === 8, JSON.stringify(Object.keys(byName)))
 
 ${serverCode}
 

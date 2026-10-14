@@ -1,16 +1,16 @@
 /**
  * Pane data routes (M1, D-M1.5 API-first; the M6 pane polls these).
  *
- * - GET /api/web-missions/missions        → mission_list()
+ * - GET /api/web-missions/missions        → mission_list() (+ ?cwd= R4.0)
  * - GET /api/web-missions/missions/:id    → mission_status({ mission_id })
- * - POST /api/web-missions/missions/:id/stop → mission_stop (M6 6.1, D-M6.3)
+ * - POST /api/web-missions/missions/:id/stop → mission_stop (M6 6.1, D-M6.3 / R4.3)
  * - POST /api/web-missions/recents/clear   → clear recents (M6 6.1, D7)
  * - POST /api/web-missions/clear-all       → wipe missions + sessions (M6 6.1, D-M6.2)
  * - GET /api/web-missions/sessions         → session visibility (M6 6.1, D-M6.4)
  *
  * Routes have no agent session. Mission root follows the last cwd any
- * mission_* tool used in this process (R2.3 pane↔session bridge); before
- * any tool runs, falls back to process.cwd() (acceptance boot — D6).
+ * mission_* tool used in this process (R2.3), or the active chat workspace
+ * cwd the pane posts via `?cwd=` (R4.0). Before either, process.cwd() (D6).
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { URL } from 'node:url'
@@ -23,8 +23,10 @@ import {
   CLEAR_ALL_ROUTE,
   SESSIONS_ROUTE,
 } from '../shared/types.ts'
+import { discoveryFace } from './discovery-face.ts'
 import {
   StoreError,
+  PANE_CONCLUSION_STUB,
   listMissions,
   missionStatus,
   stopMission,
@@ -32,7 +34,7 @@ import {
   clearAll,
 } from './store.ts'
 import { sessionViews } from './sessions-view.ts'
-import { getMissionCwd, paneMissionRoot } from './workspace.ts'
+import { getMissionCwd, noteMissionCwd, paneMissionRoot } from './workspace.ts'
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -54,7 +56,16 @@ function sendError(res: ServerResponse, status: number, code: string, message: s
 function httpStatusFor(error: unknown): number {
   if (error instanceof StoreError) {
     if (error.code === 'unknown_mission' || error.code === 'no_mission') return 404
-    if (error.code === 'bad_id' || error.code === 'note_required' || error.code === 'bad_budget') return 400
+    if (
+      error.code === 'bad_id' ||
+      error.code === 'note_required' ||
+      error.code === 'bad_budget' ||
+      error.code === 'conclusion_required' ||
+      error.code === 'bad_args' ||
+      error.code === 'not_active'
+    ) {
+      return 400
+    }
     return 500
   }
   return 500
@@ -92,6 +103,18 @@ function readJsonBody(req: IncomingMessage, limit = 64 * 1024): Promise<unknown>
   })
 }
 
+/** Adopt ?cwd= from the pane (active chat workspace) before resolving the root. */
+function adoptCwdFromUrl(req: IncomingMessage, pathForUrl: string): void {
+  try {
+    const host = req.headers.host ?? '127.0.0.1'
+    const url = new URL(req.url ?? pathForUrl, `http://${host}`)
+    const cwd = url.searchParams.get('cwd')?.trim()
+    if (cwd) noteMissionCwd(cwd)
+  } catch {
+    /* ignore bad URL */
+  }
+}
+
 export function registerMissionsRoutes(ctx: Context): void {
   const unregisterList = ctx.webServer.register({
     kind: 'exact',
@@ -102,12 +125,14 @@ export function registerMissionsRoutes(ctx: Context): void {
         return
       }
       try {
+        adoptCwdFromUrl(req, MISSIONS_ROUTE)
         const root = paneMissionRoot()
         send(res, 200, {
           ...listMissions(root),
           // Operator truth: which store the pane is reading (F6 / session cwd).
           cwd: getMissionCwd(),
           root,
+          discovery: discoveryFace(ctx),
         })
       } catch (error) {
         if (error instanceof StoreError) {
@@ -133,6 +158,8 @@ export function registerMissionsRoutes(ctx: Context): void {
       void (async () => {
         const host = req.headers.host ?? '127.0.0.1'
         const url = new URL(req.url ?? MISSIONS_ID_PREFIX, `http://${host}`)
+        const cwdQ = url.searchParams.get('cwd')?.trim()
+        if (cwdQ) noteMissionCwd(cwdQ)
         if (url.pathname === MISSIONS_ID_PREFIX) {
           if (req.method !== 'GET') {
             send(res, 405, { ok: false, error: 'method not allowed' })
@@ -151,20 +178,33 @@ export function registerMissionsRoutes(ctx: Context): void {
             return
           }
           const stopId = match[1]
-          // Optional { reason } body — malformed/absent bodies stop with no
-          // reason (the stop footer says "no reason given"), not an error.
+          // Pane mark-done: { reason, conclusion? }. Missing conclusion → stub
+          // (allowStubConclusion). Tool face requires a real conclusion.
           let reason: string | undefined
+          let conclusion: string | undefined
+          let fromPane = false
           try {
             const body = await readJsonBody(req)
-            if (body !== null && typeof body === 'object' && 'reason' in body) {
-              const r = (body as { reason: unknown }).reason
-              if (typeof r === 'string' && r.trim() !== '') reason = r.trim()
+            if (body !== null && typeof body === 'object') {
+              const b = body as { reason?: unknown; conclusion?: unknown; from_pane?: unknown }
+              if (typeof b.reason === 'string' && b.reason.trim() !== '') reason = b.reason.trim()
+              if (typeof b.conclusion === 'string' && b.conclusion.trim() !== '') {
+                conclusion = b.conclusion.trim()
+              }
+              // Pane always sends from_pane / or we treat HTTP stop as pane-capable stub.
+              fromPane = b.from_pane === true || conclusion === undefined
+            } else {
+              fromPane = true
             }
           } catch {
-            /* no usable body → stop without a reason */
+            fromPane = true
           }
           try {
-            const { manifest, already_stopped } = stopMission(paneMissionRoot(), stopId, reason)
+            const { manifest, already_stopped } = stopMission(paneMissionRoot(), stopId, {
+              reason,
+              conclusion: conclusion ?? (fromPane ? PANE_CONCLUSION_STUB : undefined),
+              allowStubConclusion: fromPane,
+            })
             send(res, 200, {
               ok: true,
               mission_id: manifest.mission_id,
@@ -172,6 +212,7 @@ export function registerMissionsRoutes(ctx: Context): void {
               stop_reason: manifest.stop_reason ?? null,
               already_stopped,
               updated_at: manifest.updated_at,
+              conclusion: manifest.conclusion ?? null,
             })
           } catch (error) {
             if (error instanceof StoreError) {

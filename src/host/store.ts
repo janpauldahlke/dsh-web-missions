@@ -25,6 +25,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { DEFAULT_FETCH_BUDGET, readConfig } from './config.ts'
+import { clearAllHostCooldowns, type HostCooldownMap } from './host-cooldown.ts'
 import { clearSessionHosts, sessionsRoot } from './sessions.ts'
 import { normalizeUrl } from './normalize.ts'
 
@@ -155,6 +156,16 @@ export interface Manifest {
    * `note` at start; echoed on status/stop (not every fetch — token tax).
    */
   goal?: string
+  /**
+   * R4.2/R4.3 — first-class conclusion written at mission_stop (or mark-done
+   * stub). Pane leads with this; briefing stays collapsible.
+   */
+  conclusion?: string
+  /**
+   * R4.4 — per-host wiedervorlage state (non-retriable counts + cooldown).
+   * Cleared when the mission stops.
+   */
+  host_cooldowns?: HostCooldownMap
 }
 
 export interface IndexRow {
@@ -178,6 +189,8 @@ export interface MissionSummary extends IndexRow {
   bytes?: number
   /** Goal pin when present on the manifest (R3.2). */
   goal?: string | null
+  /** Conclusion when present (R4.2). */
+  conclusion?: string | null
 }
 
 export interface StartOptions {
@@ -214,6 +227,10 @@ export interface StatusResult extends Omit<Manifest, 'budget'> {
   mission_md_path: string
   /** Full mission.md body for the pane briefing (R3.0). Absent file → empty string. */
   briefing: string
+  /** R4.7 — remaining === 0. */
+  budget_exhausted?: boolean
+  /** R4.7 — wrap-up hint when budget is exhausted. */
+  wrap_up_hint?: string
   /**
    * M7 (D-M7.4): the companion's discovery file, surfaced one-way
    * (dsh-local-web-discovery WRITES `<mission>/discovery.json`, the core only
@@ -402,13 +419,99 @@ export function dirBytes(path: string): number {
   return total
 }
 
-function appendStopFooter(root: string, id: string, reason: string | undefined): void {
-  const path = missionMdPath(root, id)
-  const existing = readFileSync(path, 'utf8')
-  const footer = `— stopped: ${reason?.trim() || 'no reason given'} —`
-  const withFooter = (existing.endsWith('\n') ? existing : `${existing}\n`) + footer + '\n'
-  atomicWriteText(path, withFooter)
+/** Pull `## Conclusion` / `## Outcome` body from mission.md when stop omits arg. */
+export function extractConclusionFromMd(md: string): string | null {
+  const m = md.match(/^##\s+(?:Conclusion|Outcome)\s*\n+([\s\S]*?)(?=\n##\s|\n—\s*stopped:|$)/im)
+  const body = m?.[1]?.trim()
+  return body ? body : null
 }
+
+/** Pull `## Goal` body (for pivot detect / amend). */
+export function extractGoalFromMd(md: string): string | null {
+  const m = md.match(/^##\s+Goal\s*\n+([\s\S]*?)(?=\n##\s|\n—\s*stopped:|$)/im)
+  const body = m?.[1]?.trim()
+  return body ? body : null
+}
+
+/** Sync `_status: …_` italic marker in mission.md. */
+export function syncMissionMdStatus(md: string, status: string): string {
+  if (/_status:\s*\w+_/.test(md)) {
+    return md.replace(/_status:\s*\w+_/, `_status: ${status}_`)
+  }
+  // Insert after the first heading line when the marker is missing.
+  const lines = md.split('\n')
+  if (lines.length > 0 && lines[0].startsWith('#')) {
+    lines.splice(1, 0, '', `_status: ${status}_`)
+    return lines.join('\n')
+  }
+  return `_status: ${status}_\n\n${md}`
+}
+
+/** Replace or insert `## Goal` section. */
+function upsertGoalSection(md: string, goal: string): string {
+  if (/^##\s+Goal\s*$/im.test(md)) {
+    return md.replace(
+      /^##\s+Goal\s*\n+([\s\S]*?)(?=\n##\s|\n—\s*stopped:|$)/im,
+      `## Goal\n\n${goal}\n\n`,
+    )
+  }
+  // After status / title block
+  if (/_status:\s*\w+_/.test(md)) {
+    return md.replace(/(_status:\s*\w+_)\s*\n/, `$1\n\n## Goal\n\n${goal}\n\n`)
+  }
+  return `${md.trimEnd()}\n\n## Goal\n\n${goal}\n`
+}
+
+/** Replace or insert `## Conclusion` section. */
+function upsertConclusionSection(md: string, conclusion: string): string {
+  if (/^##\s+(?:Conclusion|Outcome)\s*$/im.test(md)) {
+    return md.replace(
+      /^##\s+(?:Conclusion|Outcome)\s*\n+([\s\S]*?)(?=\n##\s|\n—\s*stopped:|$)/im,
+      `## Conclusion\n\n${conclusion}\n\n`,
+    )
+  }
+  // Before stop footer if present; else append.
+  if (/\n—\s*stopped:/.test(md)) {
+    return md.replace(/\n—\s*stopped:/, `\n## Conclusion\n\n${conclusion}\n\n— stopped:`)
+  }
+  return `${md.trimEnd()}\n\n## Conclusion\n\n${conclusion}\n`
+}
+
+function finalizeMissionMd(
+  root: string,
+  id: string,
+  opts: { status: string; reason?: string; conclusion: string; goal?: string },
+): void {
+  const path = missionMdPath(root, id)
+  let md = readFileSync(path, 'utf8')
+  md = syncMissionMdStatus(md, opts.status)
+  if (opts.goal?.trim()) md = upsertGoalSection(md, opts.goal.trim())
+  md = upsertConclusionSection(md, opts.conclusion)
+  const footer = `— stopped: ${opts.reason?.trim() || 'no reason given'} —`
+  if (!md.includes(footer) && !/\n—\s*stopped:/.test(md)) {
+    md = (md.endsWith('\n') ? md : `${md}\n`) + footer + '\n'
+  } else if (!md.includes(footer)) {
+    md = md.replace(/\n—\s*stopped:[^\n]*—?/, `\n${footer}`)
+  }
+  atomicWriteText(path, md)
+}
+
+export interface StopOptions {
+  reason?: string
+  /** Required unless already present in mission.md or allowStub. */
+  conclusion?: string
+  /** Optional goal amend / pivot at stop (R4.6). */
+  goal?: string
+  /**
+   * Pane mark-done may pass a stub conclusion. Tools must supply a real one
+   * (or ## Conclusion in mission.md).
+   */
+  allowStubConclusion?: boolean
+}
+
+/** Default stub when the operator marks done from the pane (R4.3). */
+export const PANE_CONCLUSION_STUB =
+  '(marked done from pane — no model conclusion)'
 
 // --- operations -----------------------------------------------------------------
 
@@ -477,18 +580,58 @@ export function startMission(root: string, opts: StartOptions): Manifest {
   return manifest
 }
 
-export function stopMission(root: string, id: string, reason?: string): StopResult {
+export function stopMission(root: string, id: string, reasonOrOpts?: string | StopOptions): StopResult {
+  const opts: StopOptions =
+    typeof reasonOrOpts === 'string' || reasonOrOpts === undefined
+      ? { reason: reasonOrOpts }
+      : reasonOrOpts
+
   const manifest = readManifest(root, id)
   if (!manifest) throw new StoreError('unknown_mission', `no such mission: ${id}`)
   if (manifest.status !== 'active') {
     return { manifest, already_stopped: true }
   }
+
+  const mdPath = missionMdPath(root, id)
+  let md = ''
+  try {
+    md = readFileSync(mdPath, 'utf8')
+  } catch {
+    md = ''
+  }
+
+  // Goal amend (R4.6): explicit arg wins; else adopt ## Goal if it diverged.
+  const mdGoal = extractGoalFromMd(md)
+  const goalAmend = opts.goal?.trim() || (mdGoal && mdGoal !== (manifest.goal ?? manifest.note) ? mdGoal : undefined)
+  if (goalAmend) manifest.goal = goalAmend
+
+  let conclusion = opts.conclusion?.trim() || extractConclusionFromMd(md) || ''
+  if (!conclusion) {
+    if (opts.allowStubConclusion) {
+      conclusion = PANE_CONCLUSION_STUB
+    } else {
+      throw new StoreError(
+        'conclusion_required',
+        'mission_stop needs a conclusion (pass conclusion, or write ## Conclusion / ## Outcome in mission.md). Mark-done from the pane may supply a stub.',
+      )
+    }
+  }
+  manifest.conclusion = conclusion
+
   const now = new Date().toISOString()
+  const reason = opts.reason?.trim() || 'no reason given'
+  // Budget-exhausted stop_reason when the caller asks for it via reason token.
   manifest.status = 'stopped'
-  manifest.stop_reason = reason?.trim() || 'no reason given'
+  manifest.stop_reason = reason
   manifest.updated_at = now
+  manifest.host_cooldowns = clearAllHostCooldowns()
   writeManifest(root, manifest)
-  appendStopFooter(root, id, reason)
+  finalizeMissionMd(root, id, {
+    status: 'stopped',
+    reason,
+    conclusion,
+    goal: goalAmend,
+  })
 
   const rows = readIndex(root)
   const row = rows.find((r) => r.mission_id === id)
@@ -498,6 +641,27 @@ export function stopMission(root: string, id: string, reason?: string): StopResu
     writeIndex(root, rows)
   }
   return { manifest, already_stopped: false }
+}
+
+/**
+ * Mid-mission goal amend (R4.6). Updates manifest + ## Goal in mission.md.
+ */
+export function amendMissionGoal(root: string, id: string, goal: string): Manifest {
+  const trimmed = goal?.trim()
+  if (!trimmed) throw new StoreError('bad_args', 'goal is required')
+  const manifest = readManifest(root, id)
+  if (!manifest) throw new StoreError('unknown_mission', `no such mission: ${id}`)
+  if (manifest.status !== 'active') {
+    throw new StoreError('not_active', `mission ${id} is ${manifest.status} — cannot amend goal`)
+  }
+  manifest.goal = trimmed
+  manifest.updated_at = new Date().toISOString()
+  writeManifest(root, manifest)
+  const path = missionMdPath(root, id)
+  let md = readFileSync(path, 'utf8')
+  md = upsertGoalSection(md, trimmed)
+  atomicWriteText(path, md)
+  return manifest
 }
 
 /**
@@ -561,11 +725,15 @@ export function listMissions(root: string): ListResult {
       fence: manifest?.fence ?? null,
       bytes: dirBytes(missionDir(root, r.mission_id)),
       goal: manifest?.goal ?? null,
+      conclusion: manifest?.conclusion ?? null,
     }
   }
+  const active = rows.filter((r) => r.status === 'active').map(sum)
+  // R4.1: recent = non-active only (active XOR recent).
+  const recents = rows.filter((r) => r.status !== 'active').map(sum)
   return {
-    active: rows.filter((r) => r.status === 'active').map(sum),
-    recents: rows.map(sum),
+    active,
+    recents,
     store_bytes: dirBytes(root),
   }
 }
@@ -582,15 +750,34 @@ export function missionStatus(root: string, id?: string): StatusResult {
   } catch {
     /* missing mission.md — still return status; pane shows empty brief */
   }
+  const budget = budgetView(manifest.budget)
+  const exhausted = budgetExhausted(manifest.budget)
   return {
     ...manifest,
-    budget: budgetView(manifest.budget),
+    budget,
     visited: manifest.fetched,
     mission_md_path: mdPath,
     briefing,
+    budget_exhausted: exhausted,
+    ...(exhausted
+      ? {
+          wrap_up_hint:
+            'budget exhausted — write ## Conclusion (or pass conclusion to mission_stop) and stop; do not invent more fetches',
+        }
+      : {}),
     // M7: surfaced only when present (field omitted = nothing discovered).
     ...(discovery ? { discovery } : {}),
   }
+}
+
+/** Persist host_cooldowns map after a fetch outcome (R4.4). */
+export function writeHostCooldowns(root: string, missionId: string, map: HostCooldownMap): Manifest {
+  const manifest = readManifest(root, missionId)
+  if (!manifest) throw new StoreError('unknown_mission', `no such mission: ${missionId}`)
+  manifest.host_cooldowns = map
+  manifest.updated_at = new Date().toISOString()
+  writeManifest(root, manifest)
+  return manifest
 }
 
 // --- M6 6.1 — pane hygiene ops (D7; D-M6.2) ------------------------------------

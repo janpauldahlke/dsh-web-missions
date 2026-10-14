@@ -60,6 +60,8 @@ export interface MissionSummaryPayload {
   bytes?: number
   /** Goal pin when set (R3.2). */
   goal?: string | null
+  /** Conclusion when stopped (R4.2). */
+  conclusion?: string | null
 }
 
 export interface FetchedRowPayload {
@@ -76,12 +78,15 @@ export interface FetchedRowPayload {
 
 export interface ListPayload {
   active: MissionSummaryPayload[]
+  /** Non-active only (R4.1 — active XOR recent). */
   recents: MissionSummaryPayload[]
-  /** Store the pane is reading (R2.3 — last tool cwd or process.cwd). */
+  /** Store the pane is reading (R2.3 / R4.0 — session workspace or last tool cwd). */
   cwd?: string
   root?: string
   /** Total bytes under the mission root (R3.1). */
   store_bytes?: number
+  /** Discovery companion registered in this process (R4.5). */
+  discovery?: 'on' | 'off'
 }
 
 export interface StatusPayload {
@@ -100,6 +105,14 @@ export interface StatusPayload {
   briefing?: string
   /** Selective goal pin (R3.2). */
   goal?: string
+  /** Model/operator conclusion (R4.2) — lead UI field. */
+  conclusion?: string
+  /** True when remaining fetch budget is 0 (R4.7). */
+  budget_exhausted?: boolean
+  /** Wrap-up hint when budget is exhausted (R4.7). */
+  wrap_up_hint?: string
+  /** Hosts currently on wiedervorlage cool-down (R4.4). */
+  host_cooldowns?: Record<string, { non_retriable: number; cooldown: boolean }>
 }
 
 /** Client helper: MISSIONS_ID_PREFIX has no trailing slash (webserver scar). */
@@ -115,6 +128,7 @@ export interface StopPayload {
   stop_reason: string | null
   already_stopped: boolean
   updated_at: string
+  conclusion?: string | null
 }
 
 /** M6 6.3 — hygiene action responses. */
@@ -137,6 +151,8 @@ export interface HealthPayload {
   version?: string
   time?: string
   error?: string
+  /** Discovery companion tool face (R4.5). */
+  discovery?: 'on' | 'off'
 }
 
 /**

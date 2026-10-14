@@ -24,6 +24,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { HEALTH_ROUTE, PLUGIN, VERSION } from '../shared/types.ts'
 import { DEFAULT_CONFIG, readConfig } from './config.ts'
+import { discoveryFace } from './discovery-face.ts'
 import { registerMissionsRoutes } from './routes.ts'
 import { registerMissionSkill, SKILL_NAME } from './skill.ts'
 import { registerMissionTools } from './tools.ts'
@@ -80,6 +81,8 @@ function registerHealthRoute(ctx: Context): void {
           tools: [...getRegisteredMissionTools()],
           skill: skillShipped(),
           skill_name: SKILL_NAME,
+          // R4.5 — discovery companion on|off (discovery_search registered?).
+          discovery: discoveryFace(ctx),
           config,
         })
       } catch (error) {
