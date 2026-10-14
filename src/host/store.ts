@@ -266,7 +266,7 @@ function manifestPath(root: string, id: string): string {
   return join(missionDir(root, id), 'manifest.json')
 }
 
-function missionMdPath(root: string, id: string): string {
+export function missionMdPath(root: string, id: string): string {
   return join(missionDir(root, id), 'mission.md')
 }
 

@@ -24,6 +24,7 @@ calls inside the plugin.
 | Process & port lifecycle | [`dsh-agent-processes`](https://github.com/janpauldahlke/dsh-agent-processes) |
 | NVIDIA GPU util / VRAM / power | [`dsh-gpu-monitor-nvml`](https://github.com/janpauldahlke/dsh-gpu-monitor-nvml) |
 | Local LLM endpoint / slot health | [`dsh-slot-health`](https://github.com/janpauldahlke/dsh-local-endpoint-health) |
+| Local web discovery (SearXNG / browser39 search) | [`dsh-web-discovery`](https://github.com/janpauldahlke/dsh-web-discovery) (`dsh-local-web-discovery`) |
 
 This package: [`dsh-local-web-missions`](https://www.npmjs.com/package/dsh-local-web-missions)
 · source [`janpauldahlke/dsh-web-missions`](https://github.com/janpauldahlke/dsh-web-missions).
@@ -39,6 +40,9 @@ Verified against DeepSeek Harness **`0.2.1-alpha.2`** (`dsh web`).
 - `@aquintanar/browser39` **2.0.0** (the only runtime dep) — a local headless
   browser whose platform binary ships as an optional dependency, so no system
   Chrome is required.
+- Optional companion **`dsh-local-web-discovery`** (add to the same profile) for
+  local URL discovery via SearXNG and/or `browser39 search`. Without it, seed
+  URLs + `mission_fetch` still work; do not expect a `discovery_search` tool.
 
 ---
 
@@ -109,36 +113,38 @@ dsh plugin --profile web remove dsh-local-web-missions
 
 | Tool | Purpose |
 | --- | --- |
-| `mission_start` | Start a mission — creates the store dir (`manifest.json` + `mission.md`) + a recents row; becomes the default active mission. Optional seed URLs (depth 0, hosts exempt from the crawl cap). |
-| `mission_list` | The board — active missions (newest first) + recents (cap 50) with page/visited counts. |
-| `mission_status` | One mission's detail — artifacts, receipts, budget, status. |
-| `mission_fetch` | Fetch a URL with the local `browser39` into the store (page + chunks + links + receipt). Already-stored URLs are **immediate cache hits** (`cached: true`, zero browser spawn); `force: true` re-fetches. |
-| `mission_find` | Lexical search over **stored** pages (chunks + link text) → scored matches + snippets + `best_match_url`. Read-only — never fetches. |
-| `mission_stop` | Stop a mission (freezes budget + status). |
+| `mission_start` | Start a mission — store dir + `mission.md` + recents row. Optional seed URLs (depth 0). |
+| `mission_list` | Board — active + recents. |
+| `mission_status` | Manifest + visited ledger (+ optional `discovery` if the companion recorded candidates). |
+| `mission_fetch` | Fetch via local `browser39` (cache hits free; `force` re-fetches). |
+| `mission_find` | Lexical search over **stored** pages only — never fetches. |
+| `mission_read` | Read one stored chunk (verbatim text + quality). Zero budget; text is **untrusted**. |
+| `mission_verify` | Claim check: citations resolve to `full` artifacts; numbers appear in cited pages. |
+| `mission_stop` | Stop the mission and run the same claim check. |
 
-Every fetch is a **receipted artifact** (`p-…`) carrying `chars`,
-`page_quality` (full / thin / blocked), `chunk_count`, a deterministic
-`next_step_hint`, and consent outcome (`consent_attempted` / `consent_improved`)
-plus budget `{ max, spent, remaining, unit: fetch_calls }`. Blocked pages
-(4xx/5xx, empty) are stored too, so dead URLs are known, not guessed.
+Ritual: **fetch → find → read → note → verify → stop**. Every fetch is a
+receipted artifact (`p-…`) with `page_quality`, `chunk_count`, `next_step_hint`,
+consent flags, and budget. Blocked pages are stored too.
 
 ---
 
 ## Egress, budget + depth
 
-- **Allowlist** — `<cwd>/.dsh/allowlist.txt` (project-level, one pattern per
-  line, `#` comments) is the egress gate: deny-all by default. Seeds are
-  exempt; everything fetched must match. A miss is a zero-cost
-  `allowlist_denied`.
-- **Budget** — each mission has a `used/total` fetch budget; spending it stops
-  the mission. Cache hits and refusal gates cost zero.
-- **Depth fence** — `maxDepth` (default **2** link-hops from the nearest seed)
-  + `maxDiscoveredHosts` (default **3** non-seed hosts) bound how deep and how
-  wide a fetch goes, with deterministic lineage via stored links.
+- **Allowlist** — **off by default**. When `"allowlist": "on"` in
+  `<cwd>/.dsh/web-missions/config.json`, `<cwd>/.dsh/allowlist.txt` gates
+  egress (one pattern per line, `#` comments; `**` = allow all). A missing
+  file is seeded with a template; empty patterns → `allowlist_empty`; a miss
+  → `allowlist_denied` (message names the off-switch). Cache hits are not
+  re-gated.
+- **Budget** — each mission has a `used/total` fetch budget. Cache hits and
+  refusal gates cost zero.
+- **Depth fence** — `maxDepth` (default **2**) + `maxDiscoveredHosts`
+  (default **3**) bound crawl breadth/depth.
 
-Config knobs live in `<cwd>/.dsh/web-missions/config.json`
-(`snippetWindow`, `maxDepth`, `maxDiscoveredHosts`, `defaultFetchBudget`,
-`allowlist`, …).
+Config knobs: `<cwd>/.dsh/web-missions/config.json` (overrides optional
+`~/.dsh/web-missions/config.json`) — `allowlist`, `snippetWindow`,
+`previewChars`, `readChars`, `sampleLinks`, `findLimit`, `maxDepth`,
+`maxDiscoveredHosts`, `defaultFetchBudget`, `numberFormatCheck`, …
 
 ---
 

@@ -14,7 +14,9 @@
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
-    "media"
+    "media",
+    "skills/web-mission-workflow",
+    "assets"
   ],
   "repository": {
     "type": "git",

@@ -16,13 +16,18 @@
  * - GET /api/web-missions/health — liveness { ok, name, version, time }
  * - GET /api/web-missions/missions, /missions/:id — pane data (slice 1.4)
  */
+import { existsSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { HEALTH_ROUTE, PLUGIN, VERSION } from '../shared/types.ts'
+import { DEFAULT_CONFIG, readConfig } from './config.ts'
 import { registerMissionsRoutes } from './routes.ts'
-import { registerMissionSkill } from './skill.ts'
-import { registerMissionTools } from './tools.ts'
+import { registerMissionSkill, SKILL_NAME } from './skill.ts'
+import { MISSION_TOOL_NAMES, registerMissionTools } from './tools.ts'
+import { missionRoot } from './store.ts'
 
 export const name = PLUGIN
 export const inject = ['tools']
@@ -41,6 +46,15 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body))
 }
 
+function skillShipped(): boolean {
+  try {
+    const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+    return existsSync(join(packageRoot, 'skills', SKILL_NAME, 'SKILL.md'))
+  } catch {
+    return false
+  }
+}
+
 function registerHealthRoute(ctx: Context): void {
   const unregister = ctx.webServer.register({
     kind: 'exact',
@@ -51,11 +65,20 @@ function registerHealthRoute(ctx: Context): void {
         return
       }
       try {
+        // Acceptance boots with cwd = this repo (PROTOCOL); project config merges here.
+        let config = DEFAULT_CONFIG
+        try {
+          config = readConfig(missionRoot(process.cwd()))
+        } catch { /* degrade to defaults */ }
         send(res, 200, {
           ok: true,
           name: PLUGIN,
           version: VERSION,
           time: new Date().toISOString(),
+          tools: [...MISSION_TOOL_NAMES],
+          skill: skillShipped(),
+          skill_name: SKILL_NAME,
+          config,
         })
       } catch (error) {
         // Any internal error → 500 JSON (never throw out of the handler).

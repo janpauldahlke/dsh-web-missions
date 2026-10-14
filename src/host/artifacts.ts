@@ -27,7 +27,7 @@ import {
 
 /** Hand-set knob (ENV.md): default chunk size in characters. */
 export const DEFAULT_CHUNK_CHARS = 2000
-/** Receipt preview length (C4: "first ~300 chars of stored text"). */
+/** Receipt preview length default (C4; override via config `previewChars`). */
 export const PREVIEW_HEAD_CHARS = 300
 
 /**
@@ -89,6 +89,8 @@ export interface StoredArtifact {
 export interface StoreArtifactOptions {
   /** Default DEFAULT_CHUNK_CHARS (2000, hand config). */
   chunkChars?: number
+  /** Receipt preview_head length (default PREVIEW_HEAD_CHARS / config previewChars). */
+  previewChars?: number
   /** M3: reuse an existing artifact id instead of minting a new one. */
   artifactId?: string
   /** M3: wipe the existing artifact dir contents first (force overwrite). */
@@ -134,6 +136,7 @@ export function storeArtifact(
   opts: StoreArtifactOptions = {},
 ): StoredArtifact {
   const chunkChars = opts.chunkChars ?? DEFAULT_CHUNK_CHARS
+  const previewChars = opts.previewChars ?? PREVIEW_HEAD_CHARS
   const artifactId = opts.artifactId ?? newArtifactId()
   const dir = join(root, missionId, 'pages', artifactId)
   if (opts.replace) {
@@ -178,7 +181,7 @@ export function storeArtifact(
   return {
     artifactId,
     chunkCount,
-    previewHead: page.content.slice(0, PREVIEW_HEAD_CHARS),
+    previewHead: page.content.slice(0, previewChars),
     links,
   }
 }

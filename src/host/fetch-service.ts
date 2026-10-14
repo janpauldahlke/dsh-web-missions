@@ -27,10 +27,11 @@
  * - ledger rows written by a charged attempt carry `budget_charged: true`.
  *
  * M5 (5.2 egress allowlist, pre-spawn gate):
- * - `<cwd>/.dsh/allowlist.txt` (project-level) gates egress; empty/missing
- *   file = deny all (locked-down dogfood default).
+ * - `<cwd>/.dsh/allowlist.txt` (project-level) gates egress when config
+ *   `allowlist: 'on'` (default is **off** — G2). Empty patterns →
+ *   `allowlist_empty`; a miss → `allowlist_denied` (names the off-switch).
  * - only the spawn path is gated (D-M5.4: cache hits are not re-gated — the
- *   page was already admitted); the escape is config `allowlist: 'off'`.
+ *   page was already admitted).
  *
  * M5 (5.3 depth fence, D-M5.7/D-M5.8 — crawl boundary):
  * - `maxDepth` (default 2): max link-hops from the nearest seed/root; a URL's
@@ -65,7 +66,7 @@
  * tool layer renders `{ ok: false, error: '<code>: <msg>' }`.
  */
 import { DO_NOT_CLAIM, type FetchedPage, type PageFetcher } from '../shared/types.ts'
-import { PREVIEW_HEAD_CHARS, readArtifact, storeArtifact, type StoredArtifact } from './artifacts.ts'
+import { readArtifact, storeArtifact, type StoredArtifact } from './artifacts.ts'
 import { checkAllowlist, isAllowed, loadAllowlist } from './allowlist.ts'
 import {
   consentNextStepHint,
@@ -246,13 +247,11 @@ export async function runFetch(
     if (hitsCost) {
       manifest = chargeBudget(root, missionId)
     }
-    return buildHitReceipt(root, missionId, url, manifest, hit, now())
+    return buildHitReceipt(root, missionId, url, manifest, hit, now(), config.previewChars, config.sampleLinks)
   }
 
-  // 4a. Allowlist (M5 5.2, egress control): deny-all default — an
-  //     empty/missing .dsh/allowlist.txt admits nothing (the documented
-  //     escape is config `allowlist: 'off'`). Loaded once: the consent hook
-  //     (5b) reuses it to admit consent-link navigation.
+  // 4a. Allowlist (M5 5.2): only when config allowlist === 'on' (default off).
+  //     Loaded once: the consent hook (5b) reuses it for consent-link egress.
   const allowlist = config.allowlist === 'on' ? loadAllowlist(root) : null
   if (allowlist) {
     checkAllowlist(url, allowlist)
@@ -312,8 +311,10 @@ export async function runFetch(
   const finalKey = normalizeUrl(page.finalUrl)
   const target =
     manifest.fetched.find((r) => r.normalized_url === finalKey) ?? (force && hit ? hit : undefined)
+  const sampleCap = Math.max(0, Math.floor(config.sampleLinks))
   const stored: StoredArtifact = storeArtifact(root, missionId, page, {
     chunkChars: args.chunkChars,
+    previewChars: config.previewChars,
     ...(target ? { artifactId: target.artifact_id, replace: true } : {}),
     // M5 5.3: persist the fetch depth onto page.json (M4 find matches read it).
     depth: fence.depth,
@@ -384,7 +385,7 @@ export async function runFetch(
       consentOutcome?.attempted ? consentNextStepHint(page, consentOutcome) : nextStepHint(page.quality),
       page.quality,
     ),
-    sample_links: stored.links.slice(0, 5).map((l) => l.url),
+    sample_links: stored.links.slice(0, sampleCap).map((l) => l.url),
     ...(hintFindFirst ? { hint_find_first: hintFindFirst } : {}),
   }
 }
@@ -397,9 +398,12 @@ function buildHitReceipt(
   manifest: Manifest,
   hit: FetchedRow,
   nowMs: number,
+  previewChars: number,
+  sampleLinks: number,
 ): FetchReceipt {
   const stored = readArtifact(root, missionId, hit.artifact_id)
   const age = ageDays(hit.fetched_at, nowMs)
+  const sampleCap = Math.max(0, Math.floor(sampleLinks))
   return {
     mission_id: missionId,
     artifact_id: hit.artifact_id,
@@ -413,7 +417,7 @@ function buildHitReceipt(
     consent_attempted: stored.page.consentAttempted ?? false,
     consent_improved: stored.page.consentImproved ?? false,
     chunk_count: stored.chunkCount,
-    preview_head: (stored.page.content ?? '').slice(0, PREVIEW_HEAD_CHARS),
+    preview_head: (stored.page.content ?? '').slice(0, previewChars),
     // M5 5.3: the stored lineage (hits are not re-gated, D-M5.4). M2-era
     // rows predate the fields → 0/null (schema stability).
     depth: hit.depth ?? 0,
@@ -421,7 +425,7 @@ function buildHitReceipt(
     budget: budgetView(manifest.budget),
     visited_count: manifest.fetched.length,
     next_step_hint: honestyGate(cachedNextStepHint(stored.page.quality, age), stored.page.quality),
-    sample_links: stored.links.slice(0, 5).map((l) => l.url),
+    sample_links: stored.links.slice(0, sampleCap).map((l) => l.url),
   }
 }
 

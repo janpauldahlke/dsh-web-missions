@@ -37,6 +37,8 @@ export interface FindResult {
   link_matches: LinkMatch[]
   /** Present ONLY when matches is empty. */
   hint?: string
+  /** Soft signal: enough coverage that stop/verify may be appropriate (E7). */
+  suggest_stop?: boolean
 }
 
 export interface FindUrlOnlyResult {
@@ -72,5 +74,7 @@ export function runFind(
     best_match_url: result.best_match_url,
     link_matches: result.link_matches,
     ...(result.matches.length === 0 ? { hint: NO_MATCH_HINT } : {}),
+    // E7: when find already has solid matches, nudge toward read → note → verify → stop.
+    ...(result.matches.length >= 3 ? { suggest_stop: true } : {}),
   }
 }

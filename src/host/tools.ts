@@ -1,23 +1,17 @@
 /**
- * Agent tools for web missions (M1: mission_start, mission_list,
- * mission_status, mission_stop; M2: mission_fetch; M4: mission_find).
+ * Agent tools for web missions (G1 surface after R2):
+ * mission_start | list | status | fetch | find | read | verify | stop.
  *
  * Registers plain tool definition objects on the harness `tools` service —
- * proven exemplar: `dsh-local-long-horizon/src/host/tools.ts` (do not invent
- * seats). Contract (M1):
- * - results are JSON-serializable;
- * - errors return `{ ok: false, error: '<code>: <msg>' }` — never throw into
- *   the tool layer;
- * - JSON Schema scar (dsh ≥ 0.1.7): no `required: true` on scalar property
- *   nodes — object-level `required: ['field', …]` arrays only;
- * - cwd resolves per tool call via resolveCwd (args.cwd → agent session
- *   header cwd → error). Never process.cwd() — that pins the store to the
- *   agent's workspace (C1 review #4).
+ * proven exemplar: `dsh-local-long-horizon/src/host/tools.ts`.
+ * Contract: JSON-serializable results; errors → `{ ok: false, error }`;
+ * no `required: true` on scalar property nodes; cwd via resolveCwd.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import {
   StoreError,
   missionRoot,
+  missionMdPath,
   listMissions,
   missionStatus,
   startMission,
@@ -30,6 +24,8 @@ import { runFetch } from './fetch-service.ts'
 import { LexicalEngine, FindError } from './retrieval.ts'
 import { ConsentProfilesError } from './consent.ts'
 import { runFind } from './find-service.ts'
+import { runRead } from './read-service.ts'
+import { checkMissionClaims } from './claims.ts'
 
 type ToolArgs = Record<string, any>
 
@@ -79,6 +75,18 @@ function renderJson(_args: unknown, value: unknown) {
 
 const CWD_PARAM = { type: 'string', description: 'Absolute project cwd (defaults to session cwd).' }
 
+/** Canonical registered tool names (also reported on /health). */
+export const MISSION_TOOL_NAMES = [
+  'mission_start',
+  'mission_list',
+  'mission_status',
+  'mission_fetch',
+  'mission_find',
+  'mission_read',
+  'mission_verify',
+  'mission_stop',
+] as const
+
 export function registerMissionTools(ctx: Context): () => void {
   const tools = (ctx as unknown as { tools: ToolsFace }).tools
   const disposers: Array<() => void> = []
@@ -86,22 +94,20 @@ export function registerMissionTools(ctx: Context): () => void {
   disposers.push(tools.register({
     name: 'mission_start',
     description:
-      'Start a new web research mission. Creates <cwd>/.dsh/web-missions/<id>/ ' +
-      '(manifest.json + mission.md) and a recents row; the mission becomes the ' +
-      'default active mission for the other mission_* tools. Optional seeds: ' +
-      'root URLs the mission may wander from — they are depth 0 and their ' +
-      'hosts are exempt from the maxDiscoveredHosts crawl cap.',
+      'Start a web research mission (creates store + mission.md). Optional seeds are depth-0 crawl roots. ' +
+      'when_not_to_use: do not start a second mission for the same goal — reuse the active one. ' +
+      'bad_example: mission_start for every URL. Next: mission_fetch.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         note: { type: 'string', description: 'Short mission note/title (required).' },
         template_id: { type: 'string', description: 'Optional research template id.' },
-        budget: { type: 'integer', description: 'Max fetch calls (default: config knob defaultFetchBudget, 10). Each non-cached fetch attempt costs 1 call.' },
+        budget: { type: 'integer', description: 'Max fetch calls (default: config defaultFetchBudget).' },
         seeds: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Optional seed URLs (normalized + deduped by the host). Seeds are depth 0 and their hosts are exempt from the maxDiscoveredHosts crawl cap (the deliberate roots of the mission).',
+          description: 'Optional seed URLs (depth 0; hosts exempt from host-breadth cap).',
         },
         cwd: CWD_PARAM,
       },
@@ -118,20 +124,25 @@ export function registerMissionTools(ctx: Context): () => void {
           status: { type: 'string' },
           budget: { type: 'object' },
           created_at: { type: 'string' },
+          mission_md_path: { type: 'string' },
         },
       },
       render: renderJson,
     },
     async execute(args: ToolArgs, exec: ExecLike) {
       try {
-        const root = missionRoot(resolveCwd(args, exec))
-        const manifest = startMission(root, {
+        const cwd = resolveCwd(args, exec)
+        const root = missionRoot(cwd)
+        const result = startMission(root, {
           note: args.note,
           template_id: args.template_id,
           budget: args.budget,
           seeds: args.seeds,
         })
-        return manifest
+        return {
+          ...result,
+          mission_md_path: missionMdPath(root, result.mission_id),
+        }
       } catch (error) {
         return toolErrorResult(error)
       }
@@ -141,15 +152,12 @@ export function registerMissionTools(ctx: Context): () => void {
   disposers.push(tools.register({
     name: 'mission_list',
     description:
-      'List web missions for this project. Returns active missions first ' +
-      '(newest first) and all recents (newest first, cap 50) with page and ' +
-      'visited counts.',
+      'List active missions and recents (board view). when_not_to_use: not for page content — use mission_find/read. ' +
+      'bad_example: mission_list instead of mission_status for one id. Next: mission_status or mission_fetch.',
     parameters: {
       type: 'object',
       additionalProperties: false,
-      properties: {
-        cwd: CWD_PARAM,
-      },
+      properties: { cwd: CWD_PARAM },
     },
     output: {
       schema: {
@@ -177,17 +185,14 @@ export function registerMissionTools(ctx: Context): () => void {
   disposers.push(tools.register({
     name: 'mission_status',
     description:
-      'Return the full manifest of the default (most recently started active) ' +
-      'mission, or the given mission_id, including visited: the ledger of ' +
-      'fetched pages. This is the canonical visited list — do not track ' +
-      'visited URLs from memory. An optional discovery field (M7 companion) ' +
-      'lists candidate URLs recorded by discovery_search — candidates only, ' +
-      'not fetched or visited until mission_fetch runs (allowlist-gated).',
+      'Return one mission manifest + visited ledger (canonical visited list — do not track URLs in memory). ' +
+      'Optional discovery field appears only if the discovery companion recorded candidates. ' +
+      'when_not_to_use: not a search tool. bad_example: calling discovery_search here — that is a separate companion tool when installed. Next: mission_fetch or mission_find.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        mission_id: { type: 'string', description: 'Mission id (default: most recently started active mission).' },
+        mission_id: { type: 'string', description: 'Mission id (default: most recently started active).' },
         cwd: CWD_PARAM,
       },
     },
@@ -206,9 +211,8 @@ export function registerMissionTools(ctx: Context): () => void {
           created_at: { type: 'string' },
           updated_at: { type: 'string' },
           visited: { type: 'array' },
-          // M7: optional — present only when the companion has recorded
-          // discoveries for this mission ({updated_at, urls[{url,title?,snippet?,via?}]}).
           discovery: { type: 'object' },
+          mission_md_path: { type: 'string' },
         },
       },
       render: renderJson,
@@ -216,7 +220,11 @@ export function registerMissionTools(ctx: Context): () => void {
     async execute(args: ToolArgs, exec: ExecLike) {
       try {
         const root = missionRoot(resolveCwd(args, exec))
-        return missionStatus(root, args.mission_id)
+        const status = missionStatus(root, args.mission_id)
+        return {
+          ...status,
+          mission_md_path: missionMdPath(root, status.mission_id),
+        }
       } catch (error) {
         return toolErrorResult(error)
       }
@@ -226,35 +234,17 @@ export function registerMissionTools(ctx: Context): () => void {
   disposers.push(tools.register({
     name: 'mission_fetch',
     description:
-      'Fetch a URL with the local browser39 and store it in the mission ' +
-      '(page.json + text chunks + links, plus a visited-ledger row). A URL ' +
-      'already stored (same normalized final URL, or one that previously ' +
-      'redirected onto it) returns an IMMEDIATE cache-hit receipt: cached:' +
-      ' true, same artifact_id, age_days, zero browser spawn. Pass force: ' +
-      'true to re-fetch (overwrites in place, same artifact_id). Fresh ' +
-      'receipts carry page_quality (full | thin | blocked), chunk_count, ' +
-      'preview_head, sample_links (≤5), and a deterministic next_step_hint; ' +
-      'same-host misses add hint_find_first. Blocked pages (4xx/5xx, empty) ' +
-      'are stored too, so dead URLs are known, not guessed. Every receipt ' +
-      'carries budget { max, spent, remaining, unit: fetch_calls }: each ' +
-      'non-cached fetch attempt costs 1 call (cache hits are free), and an ' +
-      'exhausted mission fails with budget_exhausted (start a new mission). ' +
-      'Egress is gated by <cwd>/.dsh/allowlist.txt (deny-all default): a URL ' +
-      'not in the allowlist fails with allowlist_denied (no fetch, no budget ' +
-      'charge). The depth fence caps the crawl: a fetch deeper than maxDepth ' +
-      'hops from the nearest seed fails with depth_exceeded, and a fetch onto ' +
-      'a new (maxDiscoveredHosts+1)th non-seed host fails with ' +
-      'host_breadth_exceeded — no fetch, no budget charge (mission_start ' +
-      'seeds are depth 0 and host-exempt; already-stored URLs are never ' +
-      're-gated). Receipts carry depth + parent_artifact_id.',
+      'Fetch a URL via local browser39 into the mission store (cache hits are free). ' +
+      'when_not_to_use: do not re-fetch a same-host path already stored — mission_find first. ' +
+      'bad_example: fetching the same URL in a loop. Next: mission_find, then mission_read.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       required: ['url'],
       properties: {
         url: { type: 'string', description: 'Absolute http(s) URL to fetch (required).' },
-        mission_id: { type: 'string', description: 'Mission id (default: most recently started active mission).' },
-        force: { type: 'boolean', description: 'Re-fetch even if already stored (overwrites in place, same artifact_id).' },
+        mission_id: { type: 'string', description: 'Mission id (default: active).' },
+        force: { type: 'boolean', description: 'Re-fetch even if stored (same artifact_id).' },
         cwd: CWD_PARAM,
       },
     },
@@ -270,21 +260,13 @@ export function registerMissionTools(ctx: Context): () => void {
           url: { type: 'string' },
           final_url: { type: 'string' },
           cached: { type: 'boolean' },
-          fetched_at: { type: 'string' },
-          age_days: { type: 'number' },
           page_quality: { type: 'string' },
-          quality_signals: { type: 'array' },
-          consent_attempted: { type: 'boolean' },
-          consent_improved: { type: 'boolean' },
           chunk_count: { type: 'integer' },
           preview_head: { type: 'string' },
-          depth: { type: 'integer' },
-          parent_artifact_id: { type: ['string', 'null'] },
           budget: { type: 'object' },
-          visited_count: { type: 'integer' },
           next_step_hint: { type: 'string' },
           sample_links: { type: 'array' },
-          hint_find_first: { type: 'string' },
+          mission_md_path: { type: 'string' },
         },
       },
       render: renderJson,
@@ -293,18 +275,177 @@ export function registerMissionTools(ctx: Context): () => void {
       try {
         const root = missionRoot(resolveCwd(args, exec))
         const config = readConfig(root)
-        return await runFetch(root, new Browser39Fetcher({
+        const receipt = await runFetch(root, new Browser39Fetcher({
           fetchTimeoutMs: config.fetchTimeoutMs,
           thinThresholdChars: config.thinThresholdChars,
-          // M5 5.4 (C7): host-scoped persistent sessions (default on).
           persistSessions: config.persistSessions,
-          // M5 5.6: stored-content cap (overflow → quality_signals: ["truncated"]).
           maxBytes: config.maxBytes,
         }), {
           url: args.url,
           mission_id: args.mission_id,
           force: args.force,
           chunkChars: args.chunkChars ?? config.chunkChars,
+        })
+        return {
+          ...receipt,
+          mission_md_path: missionMdPath(root, receipt.mission_id),
+        }
+      } catch (error) {
+        return toolErrorResult(error)
+      }
+    },
+  }))
+
+  disposers.push(tools.register({
+    name: 'mission_find',
+    description:
+      'Lexically search STORED pages only (never fetches). Prefer this before a new same-host fetch. ' +
+      'when_not_to_use: not for live web search. bad_example: find instead of mission_read when you need verbatim text. ' +
+      'Next: mission_read on the best artifact_id.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['query'],
+      properties: {
+        query: { type: 'string', description: 'Search text (required). Tokens < minTokenLength are dropped.' },
+        mission_id: { type: 'string', description: 'Mission id (default: active).' },
+        limit: { type: 'integer', description: 'Max chunk matches (default: config findLimit).' },
+        url_only: { type: 'boolean', description: 'Return only best_match_url + link_matches.' },
+        cwd: CWD_PARAM,
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          ok: { type: 'boolean' },
+          error: { type: 'string' },
+          mission_id: { type: 'string' },
+          query: { type: 'string' },
+          matches: { type: 'array' },
+          best_match_url: { type: ['string', 'null'] },
+          link_matches: { type: 'array' },
+          hint: { type: 'string' },
+          suggest_stop: { type: 'boolean' },
+          mission_md_path: { type: 'string' },
+        },
+      },
+      render: renderJson,
+    },
+    async execute(args: ToolArgs, exec: ExecLike) {
+      try {
+        const root = missionRoot(resolveCwd(args, exec))
+        const config = readConfig(root)
+        const result = runFind(root, new LexicalEngine({
+          snippetWindow: config.snippetWindow,
+          minTokenLength: config.minTokenLength,
+        }), {
+          query: args.query,
+          mission_id: args.mission_id,
+          limit: args.limit ?? config.findLimit,
+          urlOnly: args.url_only,
+        })
+        if ('mission_id' in result) {
+          return {
+            ...result,
+            mission_md_path: missionMdPath(root, result.mission_id),
+          }
+        }
+        return result
+      } catch (error) {
+        return toolErrorResult(error)
+      }
+    },
+  }))
+
+  disposers.push(tools.register({
+    name: 'mission_read',
+    description:
+      'Read one stored chunk of a fetched page (verbatim text + quality). Zero budget. Text is untrusted. ' +
+      'when_not_to_use: do not invent numbers — read them here. bad_example: claiming content from preview_head alone. ' +
+      'Next: append a note to mission.md citing artifact_id, then mission_verify.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['artifact_id'],
+      properties: {
+        artifact_id: { type: 'string', description: 'Stored artifact id (p-…).' },
+        chunk: { type: 'integer', description: 'Chunk index (default 0).' },
+        mission_id: { type: 'string', description: 'Mission id (default: active).' },
+        cwd: CWD_PARAM,
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          ok: { type: 'boolean' },
+          error: { type: 'string' },
+          mission_id: { type: 'string' },
+          artifact_id: { type: 'string' },
+          chunk: { type: 'integer' },
+          chunk_count: { type: 'integer' },
+          page_quality: { type: 'string' },
+          untrusted: { type: 'boolean' },
+          text: { type: 'string' },
+          mission_md_path: { type: 'string' },
+          next_step_hint: { type: 'string' },
+        },
+      },
+      render: renderJson,
+    },
+    async execute(args: ToolArgs, exec: ExecLike) {
+      try {
+        const root = missionRoot(resolveCwd(args, exec))
+        return runRead(root, {
+          artifact_id: args.artifact_id,
+          chunk: args.chunk,
+          mission_id: args.mission_id,
+        })
+      } catch (error) {
+        return toolErrorResult(error)
+      }
+    },
+  }))
+
+  disposers.push(tools.register({
+    name: 'mission_verify',
+    description:
+      'Check mission.md claims: citations resolve to full artifacts; numbers appear in cited pages. ' +
+      'when_not_to_use: not a substitute for mission_read. bad_example: stop without verify after writing numbers. ' +
+      'Next: fix mission.md if failed, else mission_stop.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        mission_id: { type: 'string', description: 'Mission id (default: active).' },
+        cwd: CWD_PARAM,
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          ok: { type: 'boolean' },
+          error: { type: 'string' },
+          mission_id: { type: 'string' },
+          mission_md_path: { type: 'string' },
+          citations: { type: 'array' },
+          numbers: { type: 'array' },
+          summary: { type: 'string' },
+        },
+      },
+      render: renderJson,
+    },
+    async execute(args: ToolArgs, exec: ExecLike) {
+      try {
+        const root = missionRoot(resolveCwd(args, exec))
+        const config = readConfig(root)
+        return checkMissionClaims(root, args.mission_id, {
+          numberFormatCheck: config.numberFormatCheck,
         })
       } catch (error) {
         return toolErrorResult(error)
@@ -315,15 +456,14 @@ export function registerMissionTools(ctx: Context): () => void {
   disposers.push(tools.register({
     name: 'mission_stop',
     description:
-      'Stop the default (most recently started active) mission, or the given ' +
-      'mission_id. Records the stop in the manifest, appends a footer line to ' +
-      'mission.md, and updates the recents row. Re-stopping is a no-op with ' +
-      'already_stopped: true.',
+      'Stop the mission and run a claim check on mission.md (same as mission_verify). ' +
+      'when_not_to_use: do not stop before writing sources. bad_example: stop with invented numbers. ' +
+      'Next: none — mission is frozen.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        mission_id: { type: 'string', description: 'Mission id (default: most recently started active mission).' },
+        mission_id: { type: 'string', description: 'Mission id (default: active).' },
         reason: { type: 'string', description: 'Why the mission is stopping (optional).' },
         cwd: CWD_PARAM,
       },
@@ -340,6 +480,8 @@ export function registerMissionTools(ctx: Context): () => void {
           stop_reason: { type: 'string' },
           updated_at: { type: 'string' },
           already_stopped: { type: 'boolean' },
+          claims: { type: 'object' },
+          mission_md_path: { type: 'string' },
         },
       },
       render: renderJson,
@@ -347,90 +489,31 @@ export function registerMissionTools(ctx: Context): () => void {
     async execute(args: ToolArgs, exec: ExecLike) {
       try {
         const root = missionRoot(resolveCwd(args, exec))
+        const config = readConfig(root)
         const id = resolveMissionId(root, args.mission_id)
         const { manifest, already_stopped } = stopMission(root, id, args.reason)
+        let claims
+        try {
+          claims = checkMissionClaims(root, id, { numberFormatCheck: config.numberFormatCheck })
+        } catch (error) {
+          claims = {
+            ok: false,
+            mission_id: id,
+            mission_md_path: missionMdPath(root, id),
+            citations: [],
+            numbers: [],
+            summary: error instanceof Error ? error.message : String(error),
+          }
+        }
         return {
           mission_id: manifest.mission_id,
           status: manifest.status,
           stop_reason: manifest.stop_reason,
           updated_at: manifest.updated_at,
           already_stopped,
+          claims,
+          mission_md_path: missionMdPath(root, manifest.mission_id),
         }
-      } catch (error) {
-        return toolErrorResult(error)
-      }
-    },
-  }))
-
-  disposers.push(tools.register({
-    name: 'mission_find',
-    description:
-      'Lexically search a mission\'s STORED pages (chunks + link text) and return ' +
-      'scored matches with snippets, best_match_url, and matching links. This is ' +
-      'the point of the M3 cache: query what is already stored before fetching a ' +
-      'new same-host path. find never fetches — it only reads disk. ' +
-      'Pass url_only: true for the cheap "which page talks about X" shape.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['query'],
-      properties: {
-        query: { type: 'string', description: 'Natural-language search text (required). Tokens < 3 chars are dropped.' },
-        mission_id: { type: 'string', description: 'Mission id (default: most recently started active mission).' },
-        limit: { type: 'integer', description: 'Max chunk matches (default 5, max 20).' },
-        url_only: { type: 'boolean', description: 'Return only { best_match_url, link_matches} (cheap mode).' },
-        cwd: CWD_PARAM,
-      },
-    },
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: true,
-        properties: {
-          ok: { type: 'boolean' },
-          error: { type: 'string' },
-          mission_id: { type: 'string' },
-          query: { type: 'string' },
-          matches: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                artifact_id: { type: 'string' },
-                url: { type: 'string' },
-                chunk: { type: 'integer' },
-                score: { type: 'number' },
-                depth: { type: 'integer' },
-                snippet: { type: 'string' },
-              },
-            },
-          },
-          best_match_url: { type: ['string', 'null'] },
-          link_matches: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                url: { type: 'string' },
-                text: { type: 'string' },
-                score: { type: 'number' },
-              },
-            },
-          },
-          hint: { type: 'string' },
-        },
-      },
-      render: renderJson,
-    },
-    async execute(args: ToolArgs, exec: ExecLike) {
-      try {
-        const root = missionRoot(resolveCwd(args, exec))
-        return runFind(root, new LexicalEngine(), {
-          query: args.query,
-          mission_id: args.mission_id,
-          limit: args.limit,
-          urlOnly: args.url_only,
-        })
       } catch (error) {
         return toolErrorResult(error)
       }

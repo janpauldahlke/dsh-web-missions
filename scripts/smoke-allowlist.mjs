@@ -73,7 +73,7 @@ const base = 'http://127.0.0.1:' + server.address().port
 
 // --- Harness A: service level (fake counting fetcher) --------------------------
 const harnessA = `
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, rmdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, rmdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { runFetch } from '${abs('../src/host/fetch-service.ts')}'
 import { startMission, readManifest, missionStatus, StoreError } from '${abs('../src/host/store.ts')}'
@@ -107,6 +107,7 @@ check('path: dirname(root)/allowlist.txt', allowPath === join(dirname(root), 'al
 check('parse: host', JSON.stringify(parseAllowlist('a.example')) === JSON.stringify([{ kind: 'host', host: 'a.example' }]))
 check('parse: suffix', JSON.stringify(parseAllowlist('*.example.com')) === JSON.stringify([{ kind: 'suffix', suffix: 'example.com' }]))
 check('parse: originPath', JSON.stringify(parseAllowlist('http://a.example/foo')) === JSON.stringify([{ kind: 'originPath', origin: 'http://a.example', path: '/foo' }]))
+check('parse: ** allow-all', JSON.stringify(parseAllowlist('**')) === JSON.stringify([{ kind: 'all' }]))
 check('parse: comments + blanks + trim', parseAllowlist('# hi\\n\\n  a.example  \\n*.ex.com\\nhttp://b.example/p\\n').map((p) => p.kind).join(',') === 'host,suffix,originPath')
 check('parse: case normalized', parseAllowlist('A.EXAMPLE.COM')[0].host === 'a.example.com')
 const expectErr = async (label, fn, code, part) => {
@@ -136,11 +137,14 @@ check('isAllowed: originPath other path NO', isAllowed('http://a.example/bar', p
 check('isAllowed: originPath other scheme NO', isAllowed('https://a.example/foo', parseAllowlist('http://a.example/foo')) === false)
 check('isAllowed: originPath other port NO', isAllowed('http://a.example:8080/foo', parseAllowlist('http://a.example/foo')) === false)
 check('isAllowed: empty patterns deny all', isAllowed('http://a.example/', []) === false)
+check('isAllowed: ** admits any http(s)', isAllowed('http://z.example/x', parseAllowlist('**')) === true)
 check('isAllowed: non-http denied', isAllowed('ftp://a.example/', parseAllowlist('a.example')) === false)
 check('isAllowed: unparseable denied', isAllowed('not a url', parseAllowlist('*.*.example.com')) === false)
 
-// --- loadAllowlist: missing file → [] (deny-all default)
-check('load: missing file → [] (deny all)', loadAllowlist(root).length === 0, JSON.stringify(loadAllowlist(root)))
+// --- loadAllowlist: missing file → seed template + [] (caller surfaces allowlist_empty)
+check('load: missing file → [] (and seeds template)', loadAllowlist(root).length === 0, JSON.stringify(loadAllowlist(root)))
+check('load: template seeded on disk', existsSync(allowPath) === true)
+rmSync(allowPath)
 // file is a directory → unreadable
 mkdirSync(allowPath)
 expectErr('load: file is a directory → unreadable', () => loadAllowlist(root), 'allowlist_unreadable', 'cannot read')
@@ -150,12 +154,17 @@ rmdirSync(allowPath)
 let calls = 0
 const fake = { async fetch(url) { calls++; return mkPage(url) } }
 const deny = (label, fn, url) => expectErr(label, fn, 'allowlist_denied', url + ' not in .dsh/allowlist.txt')
+const empty = (label, fn) => expectErr(label, fn, 'allowlist_empty', 'no patterns')
 
-// V1: deny-all default (no file) — refused BEFORE spawn, zero budget charge
+// Gate tests require allowlist:on (default is now off — G2)
+mkdirSync(dirname(configPath(root)), { recursive: true })
+writeFileSync(configPath(root), JSON.stringify({ allowlist: 'on' }))
+
+// V1: empty/missing patterns → allowlist_empty BEFORE spawn, zero budget charge
 const m1 = startMission(root, { note: 'allow-1', budget: 5 })
-await deny('V1: no file → denied', () => runFetch(root, fake, { url: 'http://a.example/1' }), 'http://a.example/1')
-check('V1: zero spawn on denial', calls === 0, 'calls=' + calls)
-check('V1: zero budget charge on denial', (readManifest(root, m1.mission_id).budget.spent ?? 0) === 0)
+await empty('V1: no patterns → allowlist_empty', () => runFetch(root, fake, { url: 'http://a.example/1' }))
+check('V1: zero spawn on empty', calls === 0, 'calls=' + calls)
+check('V1: zero budget charge on empty', (readManifest(root, m1.mission_id).budget.spent ?? 0) === 0)
 
 // V2: exact host admission
 writeFileSync(allowPath, 'a.example')
@@ -175,16 +184,17 @@ writeFileSync(allowPath, 'http://a.example/allowed')
 check('V4: /allowed allowed', (await runFetch(root, fake, { url: 'http://a.example/allowed/x' })).cached === false)
 await deny('V4: /other denied', () => runFetch(root, fake, { url: 'http://a.example/other' }), 'http://a.example/other')
 
-// V5: cache hits are NOT re-gated (D-M5.4) — deny-all file, hit still served
+// V5: cache hits are NOT re-gated (D-M5.4) — empty patterns file, hit still served
 writeFileSync(allowPath, '# deny all')
 const r5 = await runFetch(root, fake, { url: 'http://a.example/allowed/x' })
-check('V5: hit not re-gated under deny-all', r5.cached === true, JSON.stringify({ c: r5.cached }))
+check('V5: hit not re-gated under empty patterns', r5.cached === true, JSON.stringify({ c: r5.cached }))
 check('V5: hit free (no charge)', readManifest(root, m1.mission_id).budget.spent === 4, 'spent=' + readManifest(root, m1.mission_id).budget.spent)
-// force IS re-gated (force = spawn = gated)
-await deny('V5: force re-gated', () => runFetch(root, fake, { url: 'http://a.example/allowed/x', force: true }), 'http://a.example/allowed/x')
+// force IS re-gated (force = spawn = gated) → allowlist_empty
+await empty('V5: force re-gated → empty', () => runFetch(root, fake, { url: 'http://a.example/allowed/x', force: true }))
 check('V5: force denial zero-cost', readManifest(root, m1.mission_id).budget.spent === 4)
 
 // V6: denial is zero-cost — a denied attempt never eats the budget
+writeFileSync(allowPath, 'other.example')
 const m2 = startMission(root, { note: 'allow-2', budget: 1 })
 await deny('V6: denied with budget 1', () => runFetch(root, fake, { url: 'http://z.example/1' }), 'http://z.example/1')
 writeFileSync(allowPath, 'z.example')
@@ -196,7 +206,7 @@ const m4 = startMission(root, { note: 'allow-4', budget: 3 })
 writeFileSync(configPath(root), JSON.stringify({ allowlist: 'off' }))
 const r7 = await runFetch(root, fake, { url: 'http://anything.example/1' })
 check('V7: gate off → fetch proceeds', r7.cached === false && r7.budget.max === 3, JSON.stringify(r7.budget))
-rmSync(configPath(root))
+writeFileSync(configPath(root), JSON.stringify({ allowlist: 'on' }))
 
 // V8: gate order — allowlist fires BEFORE the budget gate
 const m3 = startMission(root, { note: 'allow-3', budget: 1 })
@@ -253,10 +263,14 @@ const started = await byName.mission_start.execute({ note: 'allowlist tool smoke
 check('tool: mission started', !!started.mission_id, JSON.stringify(started))
 const mid = started.mission_id
 
-// V1: no allowlist file → deny-all: refused envelope, ZERO spawn (server saw nothing)
+// Gate on for dogfood-style tests (default is off)
+mkdirSync(join(workdir, '.dsh', 'web-missions'), { recursive: true })
+writeFileSync(cfgPath, JSON.stringify({ allowlist: 'on' }))
+
+// V1: allowlist on + empty patterns → allowlist_empty, ZERO spawn
 const v1 = await byName.mission_fetch.execute({ url: base + '/target', mission_id: mid, cwd: workdir }, exec())
-check('tool V1: allowlist_denied envelope', v1.ok === false && typeof v1.error === 'string' && v1.error.startsWith('allowlist_denied:') && v1.error.includes('not in .dsh/allowlist.txt'), JSON.stringify(v1.error))
-check('tool V1: zero spawn on denial', (hits['/target'] || 0) === 0, JSON.stringify(hits))
+check('tool V1: allowlist_empty envelope', v1.ok === false && typeof v1.error === 'string' && v1.error.startsWith('allowlist_empty:'), JSON.stringify(v1.error))
+check('tool V1: zero spawn on empty', (hits['/target'] || 0) === 0, JSON.stringify(hits))
 let st = await byName.mission_status.execute({ mission_id: mid, cwd: workdir }, exec())
 check('tool V1: budget untouched', st.budget.spent === 0 && st.budget.remaining === 5, JSON.stringify(st.budget))
 
@@ -279,10 +293,10 @@ const v3 = await byName.mission_fetch.execute({ url: base + '/target', mission_i
 check('tool V3: hit under deny-all (not re-gated)', v3.cached === true, JSON.stringify({ c: v3.cached, e: v3.error }))
 check('tool V3: hit free', (await byName.mission_status.execute({ mission_id: mid, cwd: workdir }, exec())).budget.spent === 1)
 
-// V4: force under deny-all → allowlist_denied, no spawn
+// V4: force under empty patterns → allowlist_empty, no spawn
 const v4 = await byName.mission_fetch.execute({ url: base + '/target', force: true, mission_id: mid, cwd: workdir }, exec())
-check('tool V4: force re-gated → denied', v4.ok === false && v4.error.startsWith('allowlist_denied:'), JSON.stringify(v4.error))
-check('tool V4: no spawn on denied force', (hits['/target'] || 0) === 1, JSON.stringify(hits))
+check('tool V4: force re-gated → empty', v4.ok === false && v4.error.startsWith('allowlist_empty:'), JSON.stringify(v4.error))
+check('tool V4: no spawn on empty force', (hits['/target'] || 0) === 1, JSON.stringify(hits))
 
 // V5: config allowlist:'off' disables the gate (blocked 404 receipt, charged)
 writeFileSync(cfgPath, JSON.stringify({ allowlist: 'off' }))

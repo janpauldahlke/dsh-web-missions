@@ -1,0 +1,13 @@
+# dsh-local-web-missions egress allowlist
+# One pattern per line. Lines starting with # are comments.
+#
+# Grammar:
+#   example.com                 exact host
+#   *.example.com               apex + all subdomains
+#   https://example.com/path    origin + path prefix
+#   **                          allow all http(s) (escape hatch inside the file)
+#
+# Gate is ON only when .dsh/web-missions/config.json has "allowlist": "on".
+# Default is off. To disable after enabling: set "allowlist": "off".
+#
+# Add hosts you intend to fetch, then retry mission_fetch.

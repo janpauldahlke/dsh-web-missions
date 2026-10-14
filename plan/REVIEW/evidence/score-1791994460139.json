@@ -1,0 +1,22 @@
+{
+  "scored_at": "2026-10-14T16:14:20.139Z",
+  "result": {
+    "model": "prove-product-loop (hermetic tools + live :3090 health)",
+    "tools_called": [
+      "mission_start",
+      "mission_fetch",
+      "mission_find",
+      "mission_read",
+      "mission_verify",
+      "mission_stop"
+    ],
+    "unregistered": [],
+    "refusals": [],
+    "has_fetch": true,
+    "has_find": true,
+    "has_read": true,
+    "has_verify": true,
+    "ok": true
+  },
+  "source": "/home/hagbard/dev/dsh-web-missions/plan/REVIEW/evidence/baseline-post-r2.json"
+}

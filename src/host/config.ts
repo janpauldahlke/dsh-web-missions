@@ -3,18 +3,17 @@
  *
  * Knobs live in `<cwd>/.dsh/web-missions/config.json` (root = missionRoot) —
  * OPTIONAL file; every field is optional and merges over the defaults below.
- * Absent file = all defaults. Present-but-corrupt file = StoreError
- * `config_corrupt` (fail loud, never guess). Unknown keys are ignored (a
- * newer/older plugin version may carry them).
- *
- * The file is named in the M5 plan (config surface, v0 table); DESIGN C4/C6
- * reference the knobs by name. No UI for knobs until M6.
+ * Optional global layer: `~/.dsh/web-missions/config.json` (rig defaults),
+ * then project file wins. Absent file = all defaults. Present-but-corrupt
+ * file = StoreError `config_corrupt` (fail loud, never guess). Unknown keys
+ * are ignored.
  */
 import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { StoreError } from './store.ts'
 
-/** v0 knob surface (M_5_ledger.md "Config surface"). */
+/** v0 knob surface (M_5_ledger.md "Config surface" + R1.6 flat knobs). */
 export interface MissionConfig {
   /** Artifact chunk size in chars (M2, default 2000). */
   chunkChars: number
@@ -22,7 +21,7 @@ export interface MissionConfig {
   defaultFetchBudget: number
   /** Stored-content cap in bytes; overflow → quality_signals: ["truncated"] (5.6). */
   maxBytes: number
-  /** Egress allowlist gate: 'on' = .dsh/allowlist.txt deny-all default (5.2). */
+  /** Egress allowlist gate: 'on' = .dsh/allowlist.txt; default 'off' (G2 lean). */
   allowlist: 'on' | 'off'
   /** Host-scoped browser39 sessions under ~/.dsh/browser39/sessions/<host>/ (5.4). */
   persistSessions: boolean
@@ -40,6 +39,20 @@ export interface MissionConfig {
   maxDepth: number
   /** Depth fence: max distinct non-seed hosts per mission (default 3). */
   maxDiscoveredHosts: number
+  /** Receipt preview_head length (R4.1, default 300). */
+  previewChars: number
+  /** Max sample_links on a fetch receipt (R4.1, default 5). */
+  sampleLinks: number
+  /** mission_read text cap per chunk return (G5, default 8000). */
+  readChars: number
+  /** mission_find default match limit (default 5). */
+  findLimit: number
+  /** Minimum find token length (default 3). */
+  minTokenLength: number
+  /** Recents cap on the board (default 50). */
+  recentsCap: number
+  /** Claim check: require numbers in mission.md to appear in cited pages (default true). */
+  numberFormatCheck: boolean
 }
 
 export const CONFIG_FILENAME = 'config.json'
@@ -54,7 +67,7 @@ export const DEFAULT_CONFIG: MissionConfig = {
   chunkChars: 2000,
   defaultFetchBudget: DEFAULT_FETCH_BUDGET,
   maxBytes: DEFAULT_MAX_BYTES,
-  allowlist: 'on',
+  allowlist: 'off',
   persistSessions: true,
   cacheHitCountsAsBudget: false,
   fetchTimeoutMs: 30000,
@@ -63,6 +76,13 @@ export const DEFAULT_CONFIG: MissionConfig = {
   snippetWindow: 120,
   maxDepth: 2,
   maxDiscoveredHosts: 3,
+  previewChars: 300,
+  sampleLinks: 5,
+  readChars: 8000,
+  findLimit: 5,
+  minTokenLength: 3,
+  recentsCap: 50,
+  numberFormatCheck: true,
 }
 
 type FieldSpec =
@@ -83,57 +103,75 @@ const FIELDS: FieldSpec[] = [
   { key: 'snippetWindow', kind: 'number' },
   { key: 'maxDepth', kind: 'number' },
   { key: 'maxDiscoveredHosts', kind: 'number' },
+  { key: 'previewChars', kind: 'number' },
+  { key: 'sampleLinks', kind: 'number' },
+  { key: 'readChars', kind: 'number' },
+  { key: 'findLimit', kind: 'number' },
+  { key: 'minTokenLength', kind: 'number' },
+  { key: 'recentsCap', kind: 'number' },
+  { key: 'numberFormatCheck', kind: 'boolean' },
 ]
 
 export function configPath(root: string): string {
   return join(root, CONFIG_FILENAME)
 }
 
-/**
- * Read + validate the optional config file and merge over DEFAULT_CONFIG.
- * `root` is the mission root (`<cwd>/.dsh/web-missions`).
- */
-export function readConfig(root: string): MissionConfig {
-  let raw: string
-  try {
-    raw = readFileSync(configPath(root), 'utf8')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { ...DEFAULT_CONFIG }
-    throw new StoreError('config_unreadable', `cannot read ${CONFIG_FILENAME}: ${(error as Error).message}`)
-  }
+export function globalConfigPath(): string {
+  return join(homedir(), '.dsh', 'web-missions', CONFIG_FILENAME)
+}
+
+function parseConfigObject(raw: string, label: string): Partial<MissionConfig> {
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
   } catch {
-    throw new StoreError('config_corrupt', `${CONFIG_FILENAME} is not valid JSON`)
+    throw new StoreError('config_corrupt', `${label} is not valid JSON`)
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new StoreError('config_corrupt', `${CONFIG_FILENAME} must be a JSON object`)
+    throw new StoreError('config_corrupt', `${label} must be a JSON object`)
   }
   const record = parsed as Record<string, unknown>
-  const merged: MissionConfig = { ...DEFAULT_CONFIG }
-  const set = (key: keyof MissionConfig, value: unknown): void => {
-    ;(merged as Record<keyof MissionConfig, unknown>)[key] = value
-  }
+  const out: Partial<MissionConfig> = {}
   for (const spec of FIELDS) {
     const value = record[spec.key]
     if (value === undefined) continue
     if (spec.kind === 'enum') {
       if (typeof value !== 'string' || !spec.allowed.includes(value)) {
-        throw new StoreError('config_corrupt', `${CONFIG_FILENAME}: "${spec.key}" must be one of: ${spec.allowed.join(' | ')}`)
+        throw new StoreError('config_corrupt', `${label}: "${spec.key}" must be one of: ${spec.allowed.join(' | ')}`)
       }
-      set(spec.key, value)
+      ;(out as Record<string, unknown>)[spec.key] = value
     } else if (spec.kind === 'number') {
       if (typeof value !== 'number' || !Number.isFinite(value)) {
-        throw new StoreError('config_corrupt', `${CONFIG_FILENAME}: "${spec.key}" must be a finite number`)
+        throw new StoreError('config_corrupt', `${label}: "${spec.key}" must be a finite number`)
       }
-      set(spec.key, value)
+      ;(out as Record<string, unknown>)[spec.key] = value
     } else {
       if (typeof value !== 'boolean') {
-        throw new StoreError('config_corrupt', `${CONFIG_FILENAME}: "${spec.key}" must be true or false`)
+        throw new StoreError('config_corrupt', `${label}: "${spec.key}" must be true or false`)
       }
-      set(spec.key, value)
+      ;(out as Record<string, unknown>)[spec.key] = value
     }
   }
-  return merged
+  return out
+}
+
+function readOptionalConfigFile(path: string, label: string): Partial<MissionConfig> {
+  let raw: string
+  try {
+    raw = readFileSync(path, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw new StoreError('config_unreadable', `cannot read ${label}: ${(error as Error).message}`)
+  }
+  return parseConfigObject(raw, label)
+}
+
+/**
+ * Read + validate optional global + project config files and merge over
+ * DEFAULT_CONFIG. `root` is the mission root (`<cwd>/.dsh/web-missions`).
+ */
+export function readConfig(root: string): MissionConfig {
+  const global = readOptionalConfigFile(globalConfigPath(), `~/.dsh/web-missions/${CONFIG_FILENAME}`)
+  const project = readOptionalConfigFile(configPath(root), CONFIG_FILENAME)
+  return { ...DEFAULT_CONFIG, ...global, ...project }
 }
