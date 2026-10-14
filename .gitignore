@@ -12,6 +12,7 @@ dist/
 .DS_Store
 .tmp-m6-pane-*/   # pane smoke temp bundles (react externals must resolve upward)
 .tmp-m7-surface-*/  # M7 surface smoke temp bundles (browser39 spawn dirs)
+.idea/**
 
 # Session leftovers / long-horizon inject (project-local)
 **/.dsh-session
