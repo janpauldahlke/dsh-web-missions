@@ -1,4 +1,4 @@
-# dsh-local-web-missions egress allowlist
+# dsh-web-missions egress allowlist
 # One pattern per line. Lines starting with # are comments.
 #
 # Grammar:

@@ -1,11 +1,10 @@
-# dsh-local-web-missions
+# dsh-web-missions
 
 Persist-and-find **web research** for local coding agents in the **DeepSeek
 Harness** web UI.
 
-> npm package name is **`dsh-local-web-missions`** (`dsh-web-missions` is the
-> GitHub repo). The GitHub repo remains
-> [`janpauldahlke/dsh-web-missions`](https://github.com/janpauldahlke/dsh-web-missions).
+npm package and GitHub repo share the name **`dsh-web-missions`**
+([`janpauldahlke/dsh-web-missions`](https://github.com/janpauldahlke/dsh-web-missions)).
 
 A **mission** is a small, budgeted web-fetch unit: the agent pulls a handful of
 pages through a local `browser39` headless browser, every fetched page becomes
@@ -24,9 +23,9 @@ calls inside the plugin.
 | Process & port lifecycle | [`dsh-agent-processes`](https://github.com/janpauldahlke/dsh-agent-processes) |
 | NVIDIA GPU util / VRAM / power | [`dsh-gpu-monitor-nvml`](https://github.com/janpauldahlke/dsh-gpu-monitor-nvml) |
 | Local LLM endpoint / slot health | [`dsh-slot-health`](https://github.com/janpauldahlke/dsh-local-endpoint-health) |
-| Local web discovery (SearXNG / browser39 search) | [`dsh-web-discovery`](https://github.com/janpauldahlke/dsh-web-discovery) (`dsh-local-web-discovery`) |
+| Local web discovery (SearXNG / browser39 search) | [`dsh-web-discovery`](https://github.com/janpauldahlke/dsh-web-discovery) |
 
-This package: [`dsh-local-web-missions`](https://www.npmjs.com/package/dsh-local-web-missions)
+This package: [`dsh-web-missions`](https://www.npmjs.com/package/dsh-web-missions)
 · source [`janpauldahlke/dsh-web-missions`](https://github.com/janpauldahlke/dsh-web-missions).
 
 Verified against DeepSeek Harness **`0.2.1-alpha.2`** (`dsh web`).
@@ -90,7 +89,7 @@ rightbar crops badly in two-column tables).
 ### From npm (recommended)
 
 ```sh
-dsh plugin --profile web add dsh-local-web-missions
+dsh plugin --profile web add dsh-web-missions
 # restart dsh web (or rely on live patch reload), then hard-refresh the browser
 ```
 
@@ -118,7 +117,7 @@ env -u DSH_WEB_URL -u DSH_SHELL -u DSH_SESSION_ID dsh web --no-open
 Uninstall:
 
 ```sh
-dsh plugin --profile web remove dsh-local-web-missions
+dsh plugin --profile web remove dsh-web-missions
 # restart the web instance that had the plugin
 ```
 

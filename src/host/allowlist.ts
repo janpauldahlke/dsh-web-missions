@@ -101,7 +101,7 @@ export function seedAllowlistTemplate(root: string): string {
     body = readFileSync(join(pkgRoot, 'assets', 'allowlist.txt.template'), 'utf8')
   } catch {
     body =
-      '# dsh-local-web-missions egress allowlist\n' +
+      '# dsh-web-missions egress allowlist\n' +
       '# Add hosts (one per line), or use ** to allow all.\n' +
       '# Gate on only when config allowlist: "on". Default is off.\n'
   }

@@ -1,5 +1,5 @@
 /**
- * Browser half of dsh-local-web-missions (M0: the Missions tab).
+ * Browser half of dsh-web-missions (M0: the Missions tab).
  *
  * Registers the "Missions" rightbar tab type (top level, not inside a React
  * effect — a missing top-level registration can stall boot) with a guide
@@ -16,7 +16,7 @@ import { TAB_ID, TAB_KIND, TAB_TITLE } from '../shared/types.ts'
 import { MissionsBody } from './MissionsBody.tsx'
 import { MissionsIcon } from './MissionsIcon.tsx'
 
-export const name = 'dsh-local-web-missions'
+export const name = 'dsh-web-missions'
 export const inject = ['slots', 'sidebarRightTabs']
 
 export function apply(ctx: Context): void {

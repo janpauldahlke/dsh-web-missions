@@ -1,6 +1,6 @@
 ---
 name: web-mission-workflow
-description: Web research ritual for dsh-local-web-missions — discover → fetch → find → read → note → verify → stop. Local browser39 only; no cloud search.
+description: Web research ritual for dsh-web-missions — discover → fetch → find → read → note → verify → stop. Local browser39 only; no cloud search.
 whenToUse: When a task needs web research via mission_* tools (and discovery_search when present) instead of ad-hoc fetching or inventing numbers.
 ---
 

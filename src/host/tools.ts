@@ -108,7 +108,7 @@ export function registerMissionTools(ctx: Context): () => void {
         'tool %s registration failed (others continue): %s',
         name,
         msg,
-      ) ?? console.warn(`[dsh-local-web-missions] tool ${name} registration failed: ${msg}`)
+      ) ?? console.warn(`[dsh-web-missions] tool ${name} registration failed: ${msg}`)
     }
   }
 

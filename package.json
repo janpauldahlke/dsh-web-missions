@@ -1,5 +1,5 @@
 {
-  "name": "dsh-local-web-missions",
+  "name": "dsh-web-missions",
   "version": "1.0.0",
   "description": "Persist-and-find web research for DeepSeek Harness local agents (browser39 fetch, mission store, lexical find, budget + allowlist + depth fence). No cloud search in v0.",
   "type": "module",

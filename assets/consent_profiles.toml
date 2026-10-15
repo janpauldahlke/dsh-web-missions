@@ -1,4 +1,4 @@
-# dsh-local-web-missions — consent profiles (C10, M5 5.5)
+# dsh-web-missions — consent profiles (C10, M5 5.5)
 #
 # Accept-label vocabulary for deterministic consent-banner handling.
 # When a fresh fetch comes back `thin` with a CMP marker, the host runs the

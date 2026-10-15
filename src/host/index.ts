@@ -1,5 +1,5 @@
 /**
- * Host half of dsh-local-web-missions.
+ * Host half of dsh-web-missions.
  *
  * - `inject: ['tools']` — the tools face is the core: mission_* tools must
  *   work in headless agent sessions, not only under `dsh web`.

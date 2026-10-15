@@ -3,7 +3,7 @@
  */
 
 /** Package name — must equal `name` in package.json and the cordis.patch.yml row. */
-export const PLUGIN = 'dsh-local-web-missions'
+export const PLUGIN = 'dsh-web-missions'
 
 /** Plugin version. Keep in lockstep with package.json (M9 publish owns the bump). */
 export const VERSION = '1.0.0'

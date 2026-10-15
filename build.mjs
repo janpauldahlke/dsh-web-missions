@@ -1,5 +1,5 @@
 /**
- * dsh-local-web-missions build — dual-face via shared dsh-build-tools.
+ * dsh-web-missions build — dual-face via shared dsh-build-tools.
  *
  * Defaults: src/host/index.ts → lib/index.js (ESM/node)
  *           src/client/index.tsx → lib/client.js (__ModuleLoader__ CJS)
