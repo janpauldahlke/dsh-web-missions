@@ -1,5 +1,5 @@
 /**
- * Render entry for the M6 pane smoke (bundled by scripts/smoke-m6-pane.mjs):
+ * Render entry for the M6 pane smoke (bundled by test/smoke-m6-pane.mjs):
  * SSR-renders the presentational Board/Detail components against fixture
  * payloads — the mechanical half of V1/V2/V6 (badges, ages, budget line,
  * hint condition, stop button presence) without a browser.

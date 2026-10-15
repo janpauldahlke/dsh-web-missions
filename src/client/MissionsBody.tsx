@@ -26,6 +26,7 @@ import {
   type StopPayload,
 } from '../shared/types.ts'
 import { CollapsibleCard } from './CollapsibleCard.tsx'
+import { ConclusionMarkdown } from './conclusionMd.tsx'
 import {
   budgetExhausted,
   budgetLine,
@@ -578,9 +579,10 @@ export function Detail({
             storageKey={sk('conclusion')}
             label="conclusion"
             tone={conclusionTone}
+            defaultExpanded={Boolean(conclusion)}
             headerTitle={
               conclusion
-                ? 'Green = delivered answer'
+                ? 'Green = delivered answer (pane markdown)'
                 : detail.status === 'stopped'
                   ? 'Amber = stopped with no conclusion'
                   : 'No conclusion yet'
@@ -598,10 +600,10 @@ export function Detail({
                 : '—',
               title: conclusion || 'no conclusion yet',
             }]}
-            bodyMaxHeight={220}
+            bodyMaxHeight={320}
           >
             {conclusion ? (
-              <pre style={styles.conclusion}>{conclusion}</pre>
+              <ConclusionMarkdown text={conclusion} />
             ) : (
               <p style={styles.empty}>
                 {detail.status === 'active'
@@ -839,19 +841,7 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: 1.4,
     opacity: 0.85,
   },
-  conclusion: {
-    margin: 0,
-    padding: '10px 12px',
-    borderRadius: 6,
-    border: '1px solid color-mix(in srgb, #22c55e 28%, transparent)',
-    background: 'color-mix(in srgb, #22c55e 7%, transparent)',
-    fontSize: 12.5,
-    lineHeight: 1.55,
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
-    fontWeight: 400,
-    fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-  },
+  /* conclusion body styles live in ConclusionMarkdown */
   briefing: {
     margin: 0,
     padding: '8px 10px',

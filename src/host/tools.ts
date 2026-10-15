@@ -515,8 +515,9 @@ export function registerMissionTools(ctx: Context): () => void {
     name: 'mission_stop',
     description:
       'Stop the mission with a required conclusion (arg or ## Conclusion / ## Outcome in mission.md), then claim-check. ' +
+      'conclusion = Missions pane card only (scannable ### / - markdown). Keep the chat reply natural prose — do not paste the pane markdown into chat. ' +
       'Optional goal amends a pivot. when_not_to_use: do not stop before writing sources + conclusion. ' +
-      'bad_example: stop with invented numbers / no conclusion. Next: none — mission is frozen.',
+      'bad_example: wall-of-text conclusion / invented numbers / no conclusion. Next: none — mission is frozen.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -528,7 +529,10 @@ export function registerMissionTools(ctx: Context): () => void {
         },
         conclusion: {
           type: 'string',
-          description: 'Required answer / outcome (or write ## Conclusion in mission.md).',
+          description:
+            'Pane-only answer (not the chat message). Prefer ### headings + - bullets with [p-…](url) cites; ' +
+            'short 1–2 sentence answers OK plain. Host rejects walls with conclusion_format. ' +
+            'Or write the same under ## Conclusion in mission.md.',
         },
         goal: {
           type: 'string',

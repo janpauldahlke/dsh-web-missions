@@ -7,20 +7,28 @@
 # navigation, same host session) and re-fetches the page, keeping the
 # longest result. Consent adds batch invocations, never budget (D-M5.5).
 #
-# This file is the SHIPPED asset. To customize for a mission, copy it to
-# `.dsh/web-missions/consent_profiles.toml` (the mission root) — the override
-# REPLACES this file wholesale (no merge).
+# Design (do NOT grow an endless host list here):
+#   1. `generic` is the real product — DE/EN accept vocabulary tried for every
+#      host. Prefer extending this list when a new common label shows up.
+#   2. `[[hosts]]` is optional priority only: those labels are tried BEFORE
+#      generic for that hostname (case-insensitive). Use sparingly for labels
+#      that are unique to one site, not to duplicate generic.
+#   3. Per-project override: copy this file to
+#      `.dsh/web-missions/consent_profiles.toml` — it REPLACES this asset
+#      wholesale (no merge). That is how operators add site-specific labels
+#      without waiting on a package bump.
 #
 # Grammar (v0 subset — anything else is consent_profiles_invalid, fail-loud):
-#   generic = [ "label", ... ]              # tried for every host
-#   [[hosts]]                               # one table per host
-#   host = "example.de"                     # hostname, matched case-insensitively
-#   acceptLabels = [ "Accept all", ... ]    # host labels, tried before generic
+#   generic = [ "label", ... ]
+#   [[hosts]]
+#   host = "example.de"
+#   acceptLabels = [ "Accept all", ... ]
 #
 # Matching is case-insensitive on the trimmed element/link text.
 
 generic = [
   "Accept all",
+  "Accept",
   "Alle akzeptieren",
   "Zustimmen",
   "Akzeptieren",
@@ -31,22 +39,8 @@ generic = [
   "Einverstanden",
 ]
 
-[[hosts]]
-host = "kicker.de"
-acceptLabels = ["Alle akzeptieren", "Accept all", "Zustimmen", "Akzeptieren"]
-
-[[hosts]]
-host = "gamestar.de"
-acceptLabels = ["Alle akzeptieren", "Accept all", "Zustimmen", "I agree"]
-
-[[hosts]]
-host = "bbc.com"
-acceptLabels = ["Yes, I agree", "Allow all", "Accept"]
-
-[[hosts]]
-host = "spiegel.de"
-acceptLabels = ["Alle akzeptieren", "Akzeptieren", "Zustimmen"]
-
-[[hosts]]
-host = "taz.de"
-acceptLabels = ["Alle akzeptieren", "Akzeptieren", "Zustimmen"]
+# Optional host priority (unique labels only). Empty by default — use the
+# cwd override file for dogfood / one-off sites.
+# [[hosts]]
+# host = "example.com"
+# acceptLabels = ["Got it"]

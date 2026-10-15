@@ -4,8 +4,8 @@
  * effect wiring (the self-dispose scar). Optionally probes live :3080 health.
  *
  * Usage:
- *   node scripts/smoke-tool-face.mjs
- *   DSH_WEB_BASE=http://127.0.0.1:3080 node scripts/smoke-tool-face.mjs
+ *   node test/smoke-tool-face.mjs
+ *   DSH_WEB_BASE=http://127.0.0.1:3080 node test/smoke-tool-face.mjs
  */
 import { createRequire } from 'node:module'
 import { join, dirname } from 'node:path'

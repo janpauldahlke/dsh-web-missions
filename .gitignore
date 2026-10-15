@@ -1,7 +1,7 @@
 # Secrets / machine pins (never publish)
 .env
 .env.*
-!.env.local.example
+.env.local.example
 *.key
 ENV.md
 
@@ -12,6 +12,7 @@ dist/
 .DS_Store
 # pane smoke temp bundles (react externals must resolve upward)
 .tmp-m6-pane-*/
+.tmp-concl-*/
 # M7 surface smoke temp bundles (browser39 spawn dirs)
 .tmp-m7-surface-*/
 .idea/**
@@ -26,3 +27,6 @@ STATUS.md
 
 # Deep / messy phase plans + review evidence (local only; root PLAN.md stays tracked)
 plan/
+
+# Local agent working set (handover / builder skill / scratch) — not published
+agent/

@@ -513,6 +513,38 @@ export interface StopOptions {
 export const PANE_CONCLUSION_STUB =
   '(marked done from pane — no model conclusion)'
 
+/**
+ * Human-pane conclusion shape (R5). This string is ONLY the Missions pane
+ * card — not the chat reply. Short punchy answers may be one/two sentences;
+ * denser text needs ##/### or `-` bullets so ConclusionMarkdown can render.
+ * Pane stubs skip this gate. Tool face fails loud with `conclusion_format`.
+ */
+export const CONCLUSION_SHORT_MAX = 240
+
+export const CONCLUSION_FORMAT_HINT =
+  'Rewrite mission_stop.conclusion for the Missions pane (chat stays natural prose). Example:\n' +
+  '### Answer\n' +
+  '- **Point:** … [p-…](url)\n' +
+  '- **Point:** …\n' +
+  '### Notes\n' +
+  '- …\n' +
+  'Allowed: ## / ### headings, - bullets, **bold**, `code`, [p-…](url). No wall-of-text paragraph.'
+
+/** True when the pane can render this as a scannable answer. */
+export function conclusionLooksStructured(text: string): boolean {
+  const t = text.trim()
+  if (!t) return false
+  if (t === PANE_CONCLUSION_STUB) return true
+  if (/^#{2,3}\s+\S/m.test(t)) return true
+  if (/^[-*]\s+\S/m.test(t)) return true
+  // Punchy one-/two-sentence answers OK without markdown.
+  if (t.length <= CONCLUSION_SHORT_MAX) {
+    const sentences = t.split(/[.!?]+\s+/).filter((s) => s.trim().length > 0)
+    return sentences.length <= 2
+  }
+  return false
+}
+
 // --- operations -----------------------------------------------------------------
 
 export function startMission(root: string, opts: StartOptions): Manifest {
@@ -615,6 +647,13 @@ export function stopMission(root: string, id: string, reasonOrOpts?: string | St
         'mission_stop needs a conclusion (pass conclusion, or write ## Conclusion / ## Outcome in mission.md). Mark-done from the pane may supply a stub.',
       )
     }
+  }
+  // Tool face only — pane stubs skip. Forces readable markdown for the human pane.
+  if (!opts.allowStubConclusion && !conclusionLooksStructured(conclusion)) {
+    throw new StoreError(
+      'conclusion_format',
+      `conclusion is a wall of text (${conclusion.length} chars) — the Missions pane needs structure.\n${CONCLUSION_FORMAT_HINT}`,
+    )
   }
   manifest.conclusion = conclusion
 

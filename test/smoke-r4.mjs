@@ -26,6 +26,8 @@ import {
   missionMdPath,
   StoreError,
   PANE_CONCLUSION_STUB,
+  conclusionLooksStructured,
+  CONCLUSION_SHORT_MAX,
 } from '${abs('../src/host/store.ts')}'
 import { assessQuality, emptyJsonSignal } from '${abs('../src/host/fetcher.ts')}'
 import {
@@ -83,20 +85,46 @@ try {
   check('stop without conclusion → conclusion_required', e instanceof StoreError && e.code === 'conclusion_required', String(e))
 }
 
+check('structured: short OK', conclusionLooksStructured('Alpha answer: 42'))
+check('structured: two sentences OK', conclusionLooksStructured('First point. Second point.'))
+check(
+  'structured: three sentences under cap still need bullets',
+  !conclusionLooksStructured('One. Two. Three more words here for density.'),
+)
+check('structured: heading OK', conclusionLooksStructured('### Answer\\n- **x:** y'))
+check(
+  'structured: wall rejected',
+  !conclusionLooksStructured('x'.repeat(CONCLUSION_SHORT_MAX + 40)),
+)
+
+const wall = Array(80).fill('word').join(' ') + ' end.'
+try {
+  stopMission(root, a.mission_id, { reason: 'wall', conclusion: wall })
+  check('stop wall throws', false)
+} catch (e) {
+  check(
+    'stop wall → conclusion_format',
+    e instanceof StoreError && e.code === 'conclusion_format' && String(e).includes('### Answer'),
+    String(e).slice(0, 160),
+  )
+}
+
+const structured =
+  '### Answer\\n- **Alpha:** 42 [p-aaaaaaaa](https://example.com/)\\n### Notes\\n- done'
 const stopped = stopMission(root, a.mission_id, {
   reason: 'done',
-  conclusion: 'Alpha answer: 42',
+  conclusion: structured,
 })
-check('stop with conclusion', stopped.manifest.conclusion === 'Alpha answer: 42' && stopped.manifest.status === 'stopped')
+check('stop with structured conclusion', stopped.manifest.status === 'stopped' && stopped.manifest.conclusion && stopped.manifest.conclusion.includes('### Answer'))
 const md = readFileSync(missionMdPath(root, a.mission_id), 'utf8')
 check('mission.md _status: stopped_', /_status:\\s*stopped_/.test(md), md.slice(0, 120))
-check('mission.md has ## Conclusion', /## Conclusion/.test(md) && md.includes('Alpha answer: 42'))
+check('mission.md has ## Conclusion', /## Conclusion/.test(md) && md.includes('### Answer'))
 
 list = listMissions(root)
 check('XOR after stop: 1 active', list.active.length === 1 && list.active[0].mission_id === b.mission_id)
 check('XOR after stop: 1 recent (alpha only)', list.recents.length === 1 && list.recents[0].mission_id === a.mission_id)
 const st = missionStatus(root, a.mission_id)
-check('status: conclusion field', st.conclusion === 'Alpha answer: 42')
+check('status: conclusion field', st.conclusion && st.conclusion.includes('### Answer'))
 
 // pane stub
 const stubbed = stopMission(root, b.mission_id, { allowStubConclusion: true, reason: 'pane' })

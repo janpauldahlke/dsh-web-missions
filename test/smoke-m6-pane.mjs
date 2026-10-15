@@ -174,7 +174,7 @@ check('wiring: visibilitychange + window timers bound, effect cleanup returns di
 // payloads (deterministic: ages relative to "now", not a fixed date).
 const out2 = join(T, 'paneRender.mjs')
 await build({
-  entryPoints: [join(root, 'scripts', 'pane-render-entry.tsx')],
+  entryPoints: [join(root, 'test', 'pane-render-entry.tsx')],
   bundle: true,
   format: 'esm',
   platform: 'node',

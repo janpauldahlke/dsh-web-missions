@@ -22,7 +22,26 @@ Disk = law under compaction — pin the **Goal**, append notes after each source
 8. **Verify** — `mission_verify({})` (also runs at `mission_stop`). Citations must use `[p-…](url)`; **0 citations = fail**.
 9. **Stop** — `mission_stop({ conclusion, reason? })` (or write `## Conclusion` / `## Outcome` in `mission.md`). Conclusion is required. When budget is 0, conclude and stop (`reason: budget_exhausted`) — do not invent more fetches. Hosts on wiedervorlage (`host_cooldown`) — pick another host (or `force: true` once).
 
-## Template: kurzprofil
+## Conclusion → Missions pane only
+
+`conclusion` is the **rightbar card**, not your chat message.
+
+- **Chat** — natural prose for the human. Do not paste pane markdown into chat.
+- **`mission_stop({ conclusion })`** — short scannable markdown the pane renders:
+
+```
+### Answer
+- **Point:** … [p-…](url)
+- **Point:** …
+
+### Notes
+- …
+```
+
+Allowed in `conclusion`: `###` / `##`, `-` bullets, `**bold**`, `` `code` ``, `[p-…](url)`.  
+1–2 sentence answers may be plain text. Walls of text → host `conclusion_format` (rewrite and stop again).
+
+## Template: kurzprofil (pane `conclusion`)
 
 ```
 ### <Name>

@@ -243,10 +243,10 @@ const baseDeps = (overrides) => ({
 
   rmSync(root, { recursive: true, force: true })
   mkdirSync(root, { recursive: true })
-  // empty root (no override) → shipped asset
+  // empty root (no override) → shipped asset (generic vocabulary; hosts optional)
   const asset = loadConsentProfiles(root)
-  ok('A9b no override → shipped asset', asset.generic.length > 0 && asset.hosts.length > 0)
-  ok('A9b2 asset has kicker', asset.hosts.some((h) => h.host === 'kicker.de'))
+  ok('A9b no override → shipped asset', asset.generic.length > 0)
+  ok('A9b2 asset has DE/EN generics', asset.generic.includes('Einverstanden') && asset.generic.includes('Accept all'))
 
   // malformed override → fail loud
   writeFileSync(join(root, 'consent_profiles.toml'), 'bogus_key = 1\\n')
@@ -263,8 +263,8 @@ const baseDeps = (overrides) => ({
   // production <pkg>/lib/index.js layout — so a missing override must load
   // the real shipped asset from <repo>/assets/consent_profiles.toml.
   const p = loadConsentProfiles('/nonexistent-root-12345')
-  ok('A10a production asset resolves', p.generic.length > 0 && p.hosts.length > 0)
-  ok('A10b production asset = repo asset', p.hosts.some((h) => h.host === 'taz.de') && p.generic.includes('Einverstanden'))
+  ok('A10a production asset resolves', p.generic.length > 0)
+  ok('A10b production asset = repo asset', p.generic.includes('Einverstanden') && p.generic.includes('Accept'))
 }
 
 // ---- A11 TACTICS seam shape ---------------------------------------------------

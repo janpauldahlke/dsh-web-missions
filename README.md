@@ -50,23 +50,36 @@ Verified against DeepSeek Harness **`0.2.1-alpha.2`** (`dsh web`).
 
 ## Screenshots
 
-Light theme, matching the DSH default.
+Light theme, matching the DSH default. Full-width shots (stacked — narrow
+rightbar crops badly in two-column tables).
 
-| Board (the mission list) | Detail (artifacts + budget) |
-| --- | --- |
-| ![Web Missions board](media/pane-board.png) | ![Mission detail](media/pane-detail.png) |
+**In the rightbar** (chat + Missions pane):
+
+![Missions pane open](media/pane-open.png)
+
+**Board** (recents):
+
+![Web Missions board](media/pane-board.png)
+
+**Detail** (conclusion delivered):
+
+![Mission detail](media/pane-detail.png)
+
+**Pages ledger** (full / blocked color grammar):
+
+![Visited pages](media/pane-pages.png)
 
 ---
 
 ## What you see
 
-- **Web Missions rightbar** — the board (all missions with state + budget) and
-  each mission's detail (artifacts with `[p-…]` citations, receipts, budget
-  bar, Stop / Fetch-more actions).
-- **State chip per mission** — green when active, grey when stopped, blue when
-  completed.
-- **Budget bar** — `used/total` fetch calls; refusal gates (allowlist, depth,
-  host-breadth) cost zero and never advance the bar.
+- **Web Missions rightbar** — board (active XOR recent) and per-mission detail
+  as collapsible cards (goal → conclusion → briefing → pages → budget → hints).
+- **Color grammar** — green = conclusion delivered / page **full**; amber =
+  thin or hints attention; red = blocked / budget exhausted. Status pills stay
+  grey (lifecycle, not quality).
+- **Budget** — remaining/max `fetch_calls` plus depth/host fence in the card
+  preview; refusal gates (allowlist, depth, host-breadth) cost zero.
 - **Consent note** — when a cookie banner was auto-accepted, the receipt says
   so.
 
@@ -157,9 +170,12 @@ Config knobs: `<cwd>/.dsh/web-missions/config.json` (overrides optional
 - **Scoped sessions** — `browser39` sessions live under
   `~/.dsh/browser39/sessions/<host>/` (persisted, so an accepted consent
   survives a refetch); the mission store lives under `<cwd>/.dsh/web-missions/`.
-- **Consent is deterministic** — cookie-banner acceptance (per-host accept
-  labels + a generic fallback, from `assets/consent_profiles.toml`) is host
-  code behind the receipt — not a model judgment and not a model-facing tool.
+- **Consent is deterministic** — cookie-banner acceptance is host code behind
+  the receipt (not a model judgment). Shipped vocabulary:
+  `assets/consent_profiles.toml` (`generic` labels for every host; optional
+  `[[hosts]]` only to prioritize site-unique labels). Per-project override:
+  copy that file to `<cwd>/.dsh/web-missions/consent_profiles.toml` (replaces
+  wholesale — do not grow an endless host list in the package).
 - **No LLM calls, no embeddings, no vector store** inside the plugin.
 
 ---
@@ -171,7 +187,7 @@ Config knobs: `<cwd>/.dsh/web-missions/config.json` (overrides optional
 | Mission store | `<cwd>/.dsh/web-missions/<id>/` (`manifest.json`, `mission.md`, `artifacts/`, `receipts.json`, `links.json`, `config.json`) |
 | Egress allowlist | `<cwd>/.dsh/allowlist.txt` |
 | `browser39` sessions | `~/.dsh/browser39/sessions/<host>/` |
-| Consent profiles | `assets/consent_profiles.toml` (override at `.dsh/web-missions/consent_profiles.toml`) |
+| Consent profiles | `assets/consent_profiles.toml` (`generic` + optional hosts; cwd override replaces wholesale) |
 | HTTP | `GET /api/web-missions/health` · `/missions` · `/missions/:id` · `/sessions` · `POST …/stop` · `…/recents/clear` · `…/clear-all` |
 | UI | Rightbar **Web Missions** (board + detail) |
 
@@ -204,9 +220,26 @@ Dual-face package (same bar as the other web rightbar plugins):
 - **Client** (`lib/client.js`, CJS ModuleLoader factory) — the Web Missions
   rightbar (board + detail).
 - **Glue** — `cordis.patch.yml` + `dsh.bundle` / `dsh.client` in `package.json`.
+- **Build** — `build.mjs` calls `dsh-build-tools` (`buildDshPlugin()`); `lib/`
+  is tracked so `prepare` can fall back when the toolchain is unavailable.
 
 The `@aquintanar/browser39` runtime dep carries the platform headless-browser
 binary as an optional dependency; `BROWSER39_BIN` overrides the binary path.
+
+---
+
+## Develop / test
+
+Hermetic checks live under `test/` (same bar as other `dsh-*` plugins /
+`dsh-build-tools`). Operator boot scripts are local-only under `agent/scripts/`
+(gitignored).
+
+```sh
+npm run build
+npm run smoke              # tool-face + untrusted + pane + r4 + conclusion-md
+npm run smoke:consent      # consent profiles + tactic
+npm run smoke:allowlist    # egress allowlist
+```
 
 ---
 

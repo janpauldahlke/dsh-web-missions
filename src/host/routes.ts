@@ -61,6 +61,7 @@ function httpStatusFor(error: unknown): number {
       error.code === 'note_required' ||
       error.code === 'bad_budget' ||
       error.code === 'conclusion_required' ||
+      error.code === 'conclusion_format' ||
       error.code === 'bad_args' ||
       error.code === 'not_active'
     ) {
