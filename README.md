@@ -39,7 +39,7 @@ Verified against DeepSeek Harness **`0.2.1-alpha.2`** (`dsh web`).
 - `@aquintanar/browser39` **2.0.0** (the only runtime dep) — a local headless
   browser whose platform binary ships as an optional dependency, so no system
   Chrome is required.
-- Happy-path companion **`dsh-local-web-discovery`** (same profile, curated
+- Happy-path companion **`dsh-web-discovery`** (same profile, curated
   version — see that package’s `HANDOVER.md`). Provides `discovery_search`
   (SearXNG and/or `browser39 search`) as the **opener** ritual step. Without
   it, seed URLs + `mission_fetch` still work (`no_engine` is supported); do

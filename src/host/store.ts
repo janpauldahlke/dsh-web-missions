@@ -233,7 +233,7 @@ export interface StatusResult extends Omit<Manifest, 'budget'> {
   wrap_up_hint?: string
   /**
    * M7 (D-M7.4): the companion's discovery file, surfaced one-way
-   * (dsh-local-web-discovery WRITES `<mission>/discovery.json`, the core only
+   * (dsh-web-discovery WRITES `<mission>/discovery.json`, the core only
    * reads it — the entire M7 core surface; V5 encapsulation). Discovered URLs
    * are NOT ledger rows: they enter `visited` only when the core fetches
    * them, through the allowlist gate. Absent = nothing discovered yet
