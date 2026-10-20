@@ -26,6 +26,7 @@ import {
 import { join } from 'node:path'
 import { DEFAULT_FETCH_BUDGET, readConfig } from './config.ts'
 import { clearAllHostCooldowns, type HostCooldownMap } from './host-cooldown.ts'
+import { summarizeProvenance } from './provenance.ts'
 import { clearSessionHosts, sessionsRoot } from './sessions.ts'
 import { normalizeUrl } from './normalize.ts'
 
@@ -126,6 +127,12 @@ export interface FetchedRow {
   depth?: number
   /** M5 5.3: artifact achieving this row's minimal depth (null = root). */
   parent_artifact_id?: string | null
+  /**
+   * P_01 provenance (log-only): where the fetch URL came from.
+   * `discovery` = companion discovery.json; `user` = mission_start seed;
+   * `other` = neither (recalled / mid-mission paste / sample_links hop).
+   */
+  url_source?: 'discovery' | 'user' | 'other'
 }
 
 export interface Manifest {
@@ -240,6 +247,18 @@ export interface StatusResult extends Omit<Manifest, 'budget'> {
    * (common case — the field is simply omitted).
    */
   discovery?: DiscoverySurface
+  /**
+   * P_01: used / exists / useful summary derived from ledger url_source
+   * tags (log-only; never blocks). Omitted when the mission has no fetches.
+   */
+  provenance?: {
+    used: boolean
+    exists_ratio: number
+    exists_n: number
+    exists_ok: number
+    useful: boolean
+    by_source: { discovery: number; user: number; other: number }
+  }
 }
 
 /** M7: one discovered URL as written by the companion (shape owned there;
@@ -791,6 +810,8 @@ export function missionStatus(root: string, id?: string): StatusResult {
   }
   const budget = budgetView(manifest.budget)
   const exhausted = budgetExhausted(manifest.budget)
+  const provenance =
+    manifest.fetched.length > 0 ? summarizeProvenance(manifest.fetched) : undefined
   return {
     ...manifest,
     budget,
@@ -806,6 +827,7 @@ export function missionStatus(root: string, id?: string): StatusResult {
       : {}),
     // M7: surfaced only when present (field omitted = nothing discovered).
     ...(discovery ? { discovery } : {}),
+    ...(provenance ? { provenance } : {}),
   }
 }
 

@@ -85,6 +85,7 @@ import {
   recordHostOutcome,
 } from './host-cooldown.ts'
 import { normalizeUrl } from './normalize.ts'
+import { classifyUrlSource } from './provenance.ts'
 import { FetchError } from './fetcher.ts'
 import { hintTools } from './tool-registry.ts'
 import {
@@ -93,6 +94,7 @@ import {
   budgetExhausted,
   budgetView,
   chargeBudget,
+  readDiscoverySurface,
   readManifest,
   resolveMissionId,
   updateFetchedRow,
@@ -146,6 +148,11 @@ export interface FetchReceipt {
   budget_exhausted?: boolean
   /** R4.7 — wrap-up hint when budget is exhausted. */
   wrap_up_hint?: string
+  /**
+   * P_01 provenance (log-only): discovery | user | other.
+   * Cache hits reuse the stored row's tag when present.
+   */
+  url_source?: 'discovery' | 'user' | 'other'
   /** R4.4 — host currently on wiedervorlage cool-down after this outcome. */
   host_cooldown?: boolean
 }
@@ -381,6 +388,9 @@ export async function runFetch(
   // Merge the requested alias into the row's alias list (ordered, deduped) so
   // every redirecting URL that stores onto this row keeps hitting.
   const requestedKeys = [...new Set([...(target?.requested_keys ?? []), requestedKey])]
+  const discoveryUrls =
+    readDiscoverySurface(root, missionId)?.urls.map((u) => u.url) ?? []
+  const url_source = classifyUrlSource(url, discoveryUrls, manifest.seeds)
   const row: FetchedRow = {
     normalized_url: finalKey,
     url: page.finalUrl,
@@ -399,6 +409,7 @@ export async function runFetch(
     // the ledger BEFORE this row was written (deterministic, D-M5.7).
     depth: fence.depth,
     parent_artifact_id: fence.parent_artifact_id,
+    url_source,
   }
   const updated = target
     ? updateFetchedRow(root, missionId, target.normalized_url, row)
@@ -471,6 +482,7 @@ export async function runFetch(
     visited_count: withCooldown.fetched.length,
     next_step_hint: hint,
     sample_links: stored.links.slice(0, sampleCap).map((l) => l.url),
+    url_source,
     ...(hintFindFirst ? { hint_find_first: hintFindFirst } : {}),
     ...(budget.remaining === 0 ? { budget_exhausted: true, wrap_up_hint: wrap } : {}),
     ...(hostCooled ? { host_cooldown: true } : {}),
@@ -513,6 +525,7 @@ function buildHitReceipt(
     parent_artifact_id: hit.parent_artifact_id ?? null,
     budget,
     visited_count: manifest.fetched.length,
+    url_source: hit.url_source,
     next_step_hint: honestyGate(
       wrap
         ? `${cachedNextStepHint(stored.page.quality, age, stored.page.qualitySignals ?? [])} · ${wrap}`
